@@ -1,6 +1,6 @@
 // AI Squad 보드 화면. 프레임워크 없이 상태 하나를 받아 전부 다시 그린다.
 import { SIZE, character, drawCharacter } from './pixel.js';
-import { STATUS_FALLBACK, askItems, blockedAction, budgetLevel, canApprove, confirmItems, inputKey, inputPayload, looksLikeDiff, orderOutcome, panelDecision, renderDiff, todoCounts, viewStatus } from './logic.js';
+import { STATUS_FALLBACK, askItems, blockedAction, budgetLevel, canApprove, confirmItems, inputKey, inputPayload, limitChip, looksLikeDiff, orderOutcome, panelDecision, renderDiff, resetText, todoCounts, topMembers, viewStatus, weekSlots } from './logic.js';
 const $ = (s) => document.querySelector(s);
 const KIND = { order: '지시', handoff: '인계', question: '질문', answer: '답변', report: '완료 보고', note: '메모' };
 const TASK_COLS = [['todo', '할 일'], ['doing', '진행 중'], ['review', '검수'], ['blocked', '막힘'], ['done', '완료']];
@@ -175,18 +175,13 @@ function render() {
   const d = ui.data;
   if (!d) return;
   $('#demo-badge').hidden = !d.demo;
-  const tt = d.tokensToday || { total: 0 };
-  const bd = d.budget || { daily: 0, ratio: 0 };
-  const lv = budgetLevel(bd.ratio, bd.warn);
-  // 쓸 수 있는 양으로 오해하지 않게: 오늘 쓴 양만 보여 주고 남은 한도는 Claude 앱으로 안내한다
-  const tip = `오늘 사용 — 예산 기준(비용 환산) ${fmtTok(tt.budgetTokens)} · 전체 토큰 ${fmtTok(tt.total)}${tt.costUsd !== undefined ? ` · 비용 US$${tt.costUsd}` : ''}\n입력 ${fmtTok(tt.input)} · 출력 ${fmtTok(tt.output)} · 캐시 읽기 ${fmtTok(tt.cacheRead)} · 캐시 쓰기 ${fmtTok(tt.cacheWrite)}${bd.daily ? `\n하루 상한 ${fmtTok(bd.daily)} (${Math.round(bd.ratio * 100)}%)` : ''}${bd.task ? ` · 작업당 ${fmtTok(bd.task)}` : ''}\n남은 한도는 Claude 앱 사용량 화면에서 확인`;
   const tc = todoCounts(d.tasks);
   $('#stats').innerHTML = [
     ['is-working', '일하는 중', d.counts.working, '지금 작업을 실행하고 있는 멤버 수'],
     ['', '할 일', tc.todo + (tc.locked ? ` · 잠김 ${tc.locked}` : '') + (d.counts.review ? ` · 검수 ${d.counts.review}` : ''), '할 일: 아직 실행하지 않은 작업 수 (잠김: 선행 작업이 끝나야 시작)'],
     ['is-blocked', '막힘', d.counts.blocked, '막힌 멤버·작업 수'],
-  ].map(([c, l, n, t]) => `<span class="stat ${c}" title="${t}">${l} <b>${n}</b></span>`).join('') +
-    `<span class="stat tok-chip lv-${lv}" title="${esc(tip)}">오늘 사용 <b>${fmtShort(tt.total)}</b>${bd.daily ? `<span class="bar" role="meter" aria-label="오늘 토큰 사용률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round(bd.ratio * 100))}"><i style="width:${Math.min(100, bd.ratio * 100).toFixed(1)}%"></i></span><small>/ ${fmtShort(bd.daily)}</small>` : ''}</span>`;
+  ].map(([c, l, n, t]) => `<span class="stat ${c}" title="${t}">${l} <b>${n}</b></span>`).join('');
+  renderUsage();
   applyFx();
   fillSelects();
   renderInbox();
@@ -267,7 +262,7 @@ function eventList(events, n) {
 }
 function taskList(tasks) {
   if (!tasks.length) return '<p class="empty">없음</p>';
-  const label = Object.fromEntries(TASK_COLS);
+  const label = { ...Object.fromEntries(TASK_COLS), cancelled: '취소' };
   return `<ul class="mini-list">${tasks.map((t) => `<li><span class="grow" title="${esc(t.detail || t.title)}">${esc(t.title)}</span><span class="tag">${label[t.status]}</span></li>`).join('')}</ul>`;
 }
 const pathList = (ps) => (ps.length ? `<ul class="paths">${ps.map((p) => `<li class="mono" title="${esc(p)}">${esc(p)}</li>`).join('')}</ul>` : '<p class="empty">없음</p>');
@@ -280,7 +275,7 @@ function renderRows() {
   $('#rows').innerHTML = ms.map((m) => {
     const ev = m.lastEvent;
     const mine = d.events.filter((e) => e.member === m.id);
-    const pending = d.tasks.filter((t) => t.member === m.id && t.status !== 'done');
+    const pending = d.tasks.filter((t) => t.member === m.id && t.status !== 'done' && t.status !== 'cancelled');
     return `<details class="row" data-member="${esc(m.id)}"${ui.openRows.has(m.id) ? ' open' : ''}>
       <summary>
         ${avatar(m.id)}
@@ -312,15 +307,16 @@ function renderRows() {
 function renderKanban() {
   const d = ui.data;
   const memberOpts = (sel) => d.members.filter((m) => m.id !== 'order').map((m) => `<option value="${esc(m.id)}"${m.id === sel ? ' selected' : ''}>${esc(m.name)}</option>`).join('');
-  const statusOpts = (sel) => TASK_COLS.map(([v, l]) => `<option value="${v}"${v === sel ? ' selected' : ''}>${l}</option>`).join('');
+  const statusOpts = (sel) => (sel === 'cancelled' ? [...TASK_COLS, ['cancelled', '취소']] : TASK_COLS).map(([v, l]) => `<option value="${v}"${v === sel ? ' selected' : ''}>${l}</option>`).join('');
   $('#kanban').innerHTML = TASK_COLS.map(([s, label]) => {
-    let list = d.tasks.filter((t) => t.status === s);
+    // 취소된 작업은 완료 칸에 회색으로
+    let list = d.tasks.filter((t) => t.status === s || (s === 'done' && t.status === 'cancelled'));
     const total = list.length;
     // 완료는 최근 것만
     if (s === 'done') list = list.slice().sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')).slice(0, 8);
     return `<div class="col" data-s="${s}">
       <div class="col-head"><i></i>${label}<span class="count">${total}</span></div>
-      ${list.map((t) => `<article class="tcard${t.waitingOn?.length ? ' is-locked' : ''}" data-task="${esc(t.id)}">
+      ${list.map((t) => `<article class="tcard${t.waitingOn?.length ? ' is-locked' : ''}${t.status === 'cancelled' ? ' is-cancelled' : ''}" data-task="${esc(t.id)}">
         <div class="tcard-title">${t.waitingOn?.length ? `<span class="lock" title="선행 작업이 남아 있어 아직 시작할 수 없습니다">${ICON_LOCK}</span>` : ''}${esc(t.title)}</div>
         ${t.dependsOn?.length ? `<div class="tcard-deps" title="먼저 끝나야 하는 작업">선행: ${t.dependsOn.map((id) => { const x = d.tasks.find((y) => y.id === id); return `<span class="${x?.status === 'done' ? 'is-done' : ''}">${esc(x?.title || id)}</span>`; }).join(', ')}</div>` : ''}
         ${t.status === 'review' ? `<div class="tcard-review">검수: ${esc(nameOf(t.reviewer || ''))}${t.diffStat?.length ? ` · 파일 ${t.diffStat.length}개` : ''}</div>` : ''}
@@ -447,7 +443,7 @@ function renderModal() {
   if (!m) return closeModal();
   const d = ui.data;
   const doc = docs.get(m.id);
-  const queued = d.tasks.filter((t) => t.member === m.id && t.status !== 'done');
+  const queued = d.tasks.filter((t) => t.member === m.id && t.status !== 'done' && t.status !== 'cancelled');
   // 이 멤버가 남긴 캡처(메시지 첨부)와 이 멤버 작업의 캡처
   const caps = [...d.messages.filter((x) => x.from === m.id).flatMap((x) => x.attachments || []), ...d.tasks.filter((t) => t.member === m.id).flatMap((t) => t.attachments || [])]
     .filter((x, i, all) => x.type === 'capture' && all.findIndex((y) => y.name === x.name) === i)
@@ -877,6 +873,73 @@ document.addEventListener('change', async (e) => {
   }
 });
 
+// ── 토큰·한도: 머리줄 칩 하나(5시간·이번 주·오늘 사용), 누르면 팝오버. 보고 탭 위에 '이번 주 사용' ──
+const RUNNER_NAME = { claude: 'Claude', antigravity: 'Antigravity' };
+const USE_NOTE = '예산 기준(비용 환산) 토큰 · 남은 한도는 Claude 가 실행 때 알려 준 값';
+const LIMIT_WINDOWS = [['fiveHour', '5시간'], ['sevenDay', '이번 주']];
+function renderUsage() {
+  const d = ui.data;
+  const lim = d.limits;
+  const tt = d.tokensToday || { total: 0 };
+  const bd = d.budget || { daily: 0, ratio: 0 };
+  const ru = d.usage?.byRunner || { today: {}, week: {} };
+  const runners = [...new Set(['claude', ...d.members.map((m) => m.runner).filter(Boolean), ...Object.keys(ru.week || {})])];
+  const stale = lim?.stale ? `마지막 측정 ${rel(lim.at)}` : '';
+  const wins = LIMIT_WINDOWS.map(([k, label]) => ({ label, c: limitChip(lim?.[k]) })).filter((w) => w.c);
+  const detail = (c) => `남음 ${c.left}%${c.reset ? ` · ${c.reset} 리셋` : ''}`;
+  const limSegs = wins.length
+    ? wins.map(({ label, c }) => `<span class="seg lv-${stale ? 'stale' : c.lv}">${label} <b>${c.pct}%</b><span class="more"> · ${stale || detail(c)}</span></span>`).join('')
+    : '<span class="seg lv-stale">Claude 한도 <b>-</b></span>';
+  const others = runners.filter((r) => r !== 'claude').map((r) => `<span class="seg more">${esc(RUNNER_NAME[r] || r)} 오늘 <b>${fmtShort(ru.today?.[r] || 0)}</b> · 이번 주 ${fmtShort(ru.week?.[r] || 0)}</span>`).join('');
+  const chip = $('#use-chip');
+  chip.innerHTML = `${limSegs}<span class="seg lv-${budgetLevel(bd.ratio, bd.warn)}">오늘 사용 <b>${fmtShort(tt.total)}</b>${bd.daily ? `<span class="bar"><i style="width:${Math.min(100, bd.ratio * 100).toFixed(1)}%"></i></span>` : ''}</span>${others}`;
+  chip.title = `${wins.map(({ label, c }) => `${label} ${c.pct}% · ${detail(c)}`).join('\n') || 'Claude 한도: 아직 측정 없음'}${stale ? `\n${stale}` : ''}\n오늘 사용 ${fmtTok(tt.total)}\n${USE_NOTE}`;
+  // 머리줄 한 줄 유지: 칩이 밀려 숨으면 '남음·리셋'·다른 runner 를 접고 팝오버로만 보인다
+  chip.classList.remove('is-tight');
+  const stats = $('#stats');
+  if (stats.scrollHeight > stats.clientHeight + 1 || $('.top').scrollWidth > $('.top').clientWidth) chip.classList.add('is-tight');
+
+  const meter = (lv, ratio) => `<span class="bar lv-${lv}"><i style="width:${Math.min(100, ratio * 100).toFixed(1)}%"></i></span>`;
+  $('#use-pop').innerHTML = `<div class="pop-head"><b>토큰·한도</b><span class="muted">${stale || (lim ? `측정 ${rel(lim.at)}` : '측정 없음')}</span></div>
+    <h4 class="pop-sub">Claude 한도</h4>
+    ${wins.length ? `<ul class="use-list">${wins.map(({ label, c }) => `<li class="lv-${stale ? 'stale' : c.lv}"><span class="k">${label}</span>${meter(stale ? 'stale' : c.lv, c.pct / 100)}<b>${c.pct}%</b><span class="muted">${detail(c)}</span></li>`).join('')}</ul>` : '<p class="muted small">아직 측정 없음 — Claude 로 한 번 실행하면 채워집니다</p>'}
+    ${lim?.hit ? `<p class="small use-hit">한도에 닿았습니다${lim.hitResetsAt ? ` · ${resetText(lim.hitResetsAt)} 리셋` : ''}</p>` : ''}
+    <h4 class="pop-sub">runner 별</h4>
+    <ul class="use-list">${runners.map((r) => `<li><span class="k"><i class="dot-r r-${esc(r)}"></i>${esc(RUNNER_NAME[r] || r)}</span><span>오늘 <b>${fmtShort(ru.today?.[r] || 0)}</b> · 이번 주 <b>${fmtShort(ru.week?.[r] || 0)}</b></span>${r === 'claude' ? '' : '<span class="muted">한도 정보 없음</span>'}</li>`).join('')}</ul>
+    <h4 class="pop-sub">오늘 사용</h4>
+    <p class="small">전체 <b>${fmtTok(tt.total)}</b> · 예산 기준 ${fmtTok(tt.budgetTokens)}${tt.costUsd !== undefined ? ` · US$${tt.costUsd}` : ''}<br><span class="muted">입력 ${fmtShort(tt.input)} · 출력 ${fmtShort(tt.output)} · 캐시 읽기 ${fmtShort(tt.cacheRead)} · 캐시 쓰기 ${fmtShort(tt.cacheWrite)}</span>${bd.daily ? `<br>하루 상한 ${fmtShort(bd.daily)} (${Math.round(bd.ratio * 100)}%) ${meter(budgetLevel(bd.ratio, bd.warn), bd.ratio)}` : ''}</p>
+    <p class="muted small">${USE_NOTE}</p>
+    <a class="btn btn-sm" href="#report">이번 주 사용 보기</a>`;
+  renderWeek();
+}
+function renderWeek() {
+  const d = ui.data;
+  const box = $('#week-panel');
+  const slots = weekSlots(d.week);
+  if (!slots.length) return (box.innerHTML = '');
+  const max = Math.max(1, ...slots.map((s) => s.tokens));
+  const total = slots.reduce((a, s) => a + s.tokens, 0);
+  const runners = [...new Set(['claude', ...slots.flatMap((s) => Object.keys(s.byRunner))])];
+  const x = (i) => ((i + 0.5) / 7) * 100;
+  const pts = slots.map((s, i) => (s.used === null ? null : `${x(i).toFixed(1)},${(30 - s.used * 26).toFixed(1)}`)).filter(Boolean);
+  const top = topMembers(d.week, 5);
+  const topMax = top[0]?.[1] || 1;
+  const md = (day) => `${+day.slice(5, 7)}/${+day.slice(8)}`;
+  box.innerHTML = `<div class="wk-chart">
+      <div class="wk-head"><b>이번 주 사용</b><span class="muted">${fmtShort(total)} · 하루는 21시 경계${d.week.resetsAt ? ` · ${resetText(d.week.resetsAt)} 리셋` : ''}</span>
+        <ul class="wk-legend">${runners.map((r) => `<li><i class="dot-r r-${esc(r)}"></i>${esc(RUNNER_NAME[r] || r)}</li>`).join('')}<li><i class="dot-line"></i>주간 사용률</li></ul></div>
+      <div class="wk-line"><svg viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden="true">${pts.length > 1 ? `<polyline points="${pts.join(' ')}" />` : ''}</svg>
+        ${slots.map((s, i) => (s.used === null ? '' : `<span style="left:${x(i).toFixed(1)}%;top:${(30 - s.used * 26).toFixed(0)}px">${Math.round(s.used * 100)}%</span>`)).join('')}</div>
+      <div class="wk-bars">${slots.map((s) => `<div class="wk-col${s.future ? ' is-future' : ''}" title="${esc(`${md(s.day)} ${s.dow} — ${fmtTok(s.tokens)}${Object.entries(s.byRunner).map(([r, n]) => `\n${RUNNER_NAME[r] || r} ${fmtTok(n)}`).join('')}${s.used === null ? '' : `\n주간 사용률 ${Math.round(s.used * 100)}%`}\n${USE_NOTE}`)}">
+          <span class="wk-val">${s.future ? '' : fmtShort(s.tokens)}</span>
+          <span class="wk-bar" style="height:${((s.tokens / max) * 100).toFixed(1)}%">${runners.map((r) => (s.byRunner[r] ? `<i class="r-${esc(r)}" style="flex:${s.byRunner[r]}"></i>` : '')).join('')}</span>
+          <span class="wk-day">${md(s.day)} ${s.dow}</span></div>`).join('')}</div>
+    </div>
+    <div class="wk-top"><b>멤버 상위 5</b>
+      ${top.length ? `<ol>${top.map(([id, n]) => `<li><span class="grow">${esc(nameOf(id))}</span><span class="bar"><i style="width:${((n / topMax) * 100).toFixed(1)}%"></i></span><b>${fmtShort(n)}</b></li>`).join('')}</ol>` : '<p class="empty">아직 없음</p>'}
+      <p class="muted small">${USE_NOTE}</p></div>`;
+}
+
 // ── 실행기(runner) 연결 상태: 머리줄에는 "연결 n/m" 칩 하나, 누르면 팝오버 ──
 const connPop = $('#conn-pop');
 function renderRunners() {
@@ -937,6 +1000,8 @@ function closePop(name) {
   pop.hidden = true;
   $(btn).setAttribute('aria-expanded', 'false');
 }
+pops.use = { btn: '#use-chip', pop: $('#use-pop') };
+$('#use-chip').addEventListener('click', () => togglePop('use'));
 $('#conn-chip').addEventListener('click', () => togglePop('conn'));
 $('#inbox-chip').addEventListener('click', () => togglePop('inbox'));
 connPop.addEventListener('click', (e) => {
@@ -1136,6 +1201,13 @@ $('#side-list').addEventListener('click', async (e) => {
 });
 $('#confirm-badge').addEventListener('click', () => setSide(!sideUi.open));
 $('#side-close').addEventListener('click', () => setSide(false));
+// 서랍은 바깥 클릭·Esc 로 닫는다(모달이 떠 있으면 모달 몫)
+document.addEventListener('pointerdown', (e) => {
+  if (sideUi.open && !side.contains(e.target) && !e.target.closest('#confirm-badge, dialog')) setSide(false);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && sideUi.open && !document.querySelector('dialog[open]')) setSide(false);
+});
 
 async function decide(a, decision, note = '') {
   try {

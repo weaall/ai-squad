@@ -4,7 +4,8 @@ name: CLI·실행기
 initials: RN
 runner: claude
 model:
-headroom: false
+maxTurns: 120
+headroom: true
 owns:
   - "bin/**"
   - "lib/runners/**"
@@ -21,7 +22,6 @@ tools:
   - "Bash(node *)"
   - "Bash(npm test*)"
 plugins:
-  headroom: false
 ---
 
 ## 역할

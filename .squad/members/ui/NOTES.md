@@ -1,5 +1,10 @@
 ## 인계 메모
 
+- T-mveva74d-5ef8: 'cancelled' 작업은 칸반 완료 칸에 회색·취소선(.tcard.is-cancelled), 상태 select·taskList 라벨 '취소', 멤버 대기 목록에서 제외. 막힘 단추는 이미 blockedAction → /api/task/:id/* 로 연결돼 있어 그대로 둠.
+
+- T-mveukd5x-efd5: CI 적용 — 머리 로고(어두운 logo.png / 밝은 symbol+"AI SQUAD" 글자), 파비콘 png, 색 토큰 --brand-*·--brand-grad·--accent-text(어두운 테마 옅은 바탕 위 블루 글자용)·--done. 실행 중=시안, 지시 빛=시안, 질문=분홍(시안과 겹침 피함), 오더 노드 고리=conic 심볼 그라데이션.
+  서버 TYPES 에 .png 없어 /brand/* 404 → server handoff(M-mveukzfe-d482). runner 별 막대 그래프는 화면에 없어 건너뜀.
+
 - T-mvet33lb-4d87: 확인 패널 순서 승인→막힘(bl:id|updatedAt)→답 없는 질문(data.unanswered, 멤버끼리)→예산. 막힘 카드 단추는 logic.js blockedAction → POST /api/task/:id/{retry,reassign,done,cancel}(서버 미구현, M-mveteynv-ea00 handoff).
   사람에게 온 question 은 askItems 로 입력 모달에 섞여 뜨고 답은 /api/messages answer(작업 todo 전환도 server 몫). 로그 10줄은 events taskId 로 대신.
 

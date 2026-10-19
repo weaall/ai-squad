@@ -4,7 +4,8 @@ name: 보드 화면
 initials: UI
 runner: claude
 model:
-headroom: false
+maxTurns: 120
+headroom: true
 owns:
   - "server/public/**"
 reads:
@@ -28,6 +29,8 @@ plugins:
 보드 화면(index.html·app.js·style.css·pixel.js). 효과는 빠르고 단순하게(성능 우선), 레이아웃이 흔들리지 않게, 1440·1280 한 화면, 밝은·어두운 테마, 이모지 금지.
 
 ## 지금 작업
+
+인계: 보드 이벤트 type 'outside-warn' 추가(runner): {taskId, text, files:[{path, member}]} —
 
 ## 인계 메모
 

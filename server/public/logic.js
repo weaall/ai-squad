@@ -140,3 +140,42 @@ export function inputPayload(task, { approve, choice, values = {}, note = '' }) 
   if (miss.length) return { error: `필수 칸을 채워 주세요: ${miss.map((f) => f.label).join(', ')}`, missing: miss.map((f) => f.name) };
   return { body: { ...body, values: Object.fromEntries(req.fields.map((f) => [f.name, String(values[f.name] ?? '').trim()])) } };
 }
+
+// ── 토큰·한도 ──
+const HOUR = 3600e3;
+const DAY = 24 * HOUR;
+const DOW = ['일', '월', '화', '수', '목', '금', '토'];
+/** Claude 한도 칩 단계: 70% 노랑, 90% 빨강. */
+export const limitLevel = (used) => (used >= 0.9 ? 'over' : used >= 0.7 ? 'warn' : 'ok');
+/** 리셋 시각(한국시간): 24시간 안이면 'HH:MM', 넘으면 '목 21:00'. */
+export function resetText(ms, now = Date.now()) {
+  if (!ms) return '';
+  const d = new Date(ms + 9 * HOUR);
+  const hm = `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+  return ms - now > DAY ? `${DOW[d.getUTCDay()]} ${hm}` : hm;
+}
+/** 한도 창 하나 → 칩에 쓸 값. 창 정보가 없으면 null. */
+export function limitChip(w, now = Date.now()) {
+  if (!w || !Number.isFinite(w.used)) return null;
+  const pct = Math.round(w.used * 100);
+  return { pct, left: Math.max(0, 100 - pct), reset: resetText(w.resetsAt, now), lv: limitLevel(w.used) };
+}
+/** 21시 경계 하루 키 — 서버 lib/state.mjs usageDay 와 같은 규칙. */
+const dayKey = (t) => new Date(t + 12 * HOUR).toISOString().slice(0, 10);
+/** 이번 주 7칸: 주간 창 시작부터 하루씩, 아직 오지 않은 날은 빈 칸(future). */
+export function weekSlots(week) {
+  if (!week?.start) return [];
+  const got = new Map((week.days || []).map((d) => [d.day, d]));
+  return Array.from({ length: 7 }, (_, i) => {
+    const t = week.start + i * DAY;
+    const day = dayKey(t);
+    const d = got.get(day);
+    return { day, dow: DOW[new Date(day).getUTCDay()], tokens: d?.tokens || 0, byRunner: d?.byRunner || {}, used: d?.used ?? null, future: !d };
+  });
+}
+/** 이번 주 멤버별 합계 상위 n. */
+export function topMembers(week, n = 5) {
+  const sum = {};
+  for (const d of week?.days || []) for (const [m, v] of Object.entries(d.byMember || {})) sum[m] = (sum[m] || 0) + v;
+  return Object.entries(sum).sort((a, b) => b[1] - a[1]).slice(0, n);
+}

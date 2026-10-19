@@ -27,6 +27,7 @@
       <select id="project-select" class="select" aria-label="프로젝트 선택"></select>
     </label>
     <div class="stats" id="stats" aria-live="polite"></div>
+    <button type="button" class="use-chip" id="use-chip" aria-haspopup="dialog" aria-expanded="false" aria-controls="use-pop"></button>
     <span id="demo-badge" class="demo-badge" hidden title="scripts/demo-events.mjs 가 만든 시연 기록입니다. 실제 기록이 아닙니다.">시연 데이터</span>
     <nav class="tabs" role="tablist" aria-label="화면">
       <a href="#squad" role="tab" class="tab" id="tab-squad" aria-controls="panel-squad">스쿼드</a>
@@ -135,6 +136,7 @@
         <button type="button" class="btn btn-primary" id="report-make">오늘 보고 만들기</button>
         <span class="panel-sub" id="report-sub">규칙 기반 요약입니다. 문장을 다듬으려면 터미널에서 <code>squad report &lt;project&gt; --ai</code></span>
       </div>
+      <div class="week-panel" id="week-panel" aria-label="이번 주 사용"></div>
       <div class="report-body scroll md" id="report-body"></div>
     </section>
 
@@ -215,6 +217,7 @@
   <div class="popover" id="tech-pop" role="dialog" aria-label="사용 기술" hidden></div>
   <div class="popover small-pop" id="conn-pop" role="dialog" aria-label="실행기 연결 상태" hidden></div>
   <div class="popover small-pop" id="inbox-pop" role="dialog" aria-label="데스크톱 세션 지시" hidden></div>
+  <div class="popover small-pop" id="use-pop" role="dialog" aria-label="토큰·한도" hidden></div>
 
   <div class="toast" id="toast" role="status" hidden></div>
   <script src="/app.js" type="module"></script>

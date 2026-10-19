@@ -4,7 +4,7 @@ name: 보드 서버·API
 initials: SV
 runner: claude
 model:
-headroom: false
+headroom: true
 owns:
   - "server/index.mjs"
   - "lib/**"
@@ -21,7 +21,7 @@ tools:
   - "Bash(npm test*)"
   - "Bash(curl *)"
 plugins:
-  headroom: false
+  headroom: true
 ---
 
 ## 역할

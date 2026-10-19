@@ -251,7 +251,7 @@ textarea.input { resize: vertical; line-height: 1.5; }
 /* ── 연결 보기 ── */
 .squad-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; flex: none; }
 .view { flex: 1; min-height: 0; }
-.net-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(540px, 0.95fr); gap: 14px; }
+.net-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); gap: 14px; }
 .canvas-panel { overflow: hidden; min-height: 0; }
 .cards-col { overflow-y: auto; min-height: 0; padding: 1px 4px 1px 1px; overscroll-behavior: contain; }
 .legend { list-style: none; display: flex; gap: 12px; flex-wrap: wrap; margin: 0 0 0 auto; padding: 0; font-size: 12px; color: var(--muted); }
@@ -271,7 +271,7 @@ textarea.input { resize: vertical; line-height: 1.5; }
   background: rgba(10, 15, 30, .92); color: #e8ecf8; border: 1px solid rgba(255, 255, 255, .12);
   padding: 7px 10px; border-radius: 8px; font-size: 12px; max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(255px, 1fr)); gap: 12px; align-content: start; }
+.cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-content: start; }
 .card {
   --st: var(--line-soft);
   display: flex; flex-direction: column; gap: 8px; padding: 13px 14px;
@@ -436,7 +436,8 @@ textarea.input { resize: vertical; line-height: 1.5; }
 
 /* ── 좁은 창 ── */
 @media (max-width: 1180px) {
-  .net-layout { grid-template-columns: minmax(0, 1fr) minmax(300px, 0.8fr); }
+  .net-layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); }
+  .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 /* 좁거나 낮은 창: 한 화면 고정을 풀고 페이지 스크롤로 */
 @media (max-width: 960px), (max-height: 560px) {
@@ -627,14 +628,18 @@ textarea.input { resize: vertical; line-height: 1.5; }
 .tok.use.lv-over { color: var(--blocked); }
 .cmd-form .select { flex: none; width: 168px; }
 
-/* ── 확인 패널: 오른쪽에 밀어내는 패널(덮지 않음) ── */
+/* ── 확인 패널: 오른쪽에서 겹쳐 들어오는 서랍(본문 레이아웃은 그대로) ── */
 .shell { flex: 1; min-height: 0; display: flex; min-width: 0; }
 .shell > .wrap { min-width: 0; }
 .side {
-  flex: none; width: 340px; min-height: 0; display: flex; flex-direction: column;
-  border-left: 1px solid var(--line-soft); background: color-mix(in srgb, var(--surface) 70%, var(--bg));
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 40;
+  width: min(360px, 100vw); display: flex; flex-direction: column;
+  border-left: 1px solid var(--line-soft); background: var(--bg); box-shadow: -12px 0 32px rgba(0, 0, 0, .28);
+  animation: side-in .15s ease-out;
 }
-.side.is-wide { width: min(600px, 44vw); }
+.side.is-wide { width: min(600px, 100vw); }
+@keyframes side-in { from { transform: translateX(100%); } }
+.fx-lite .side { animation: none; }
 .side-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line-soft); }
 .side-head h2 { flex: 1; font-size: 14px; display: flex; gap: 6px; align-items: baseline; }
 .side-head .count { color: var(--warn); font-size: 12.5px; }
@@ -681,6 +686,8 @@ pre.cmd { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--su
 .kanban { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .col[data-s="review"] .col-head i { background: var(--k-report); }
 .tcard.is-locked { border-style: dashed; }
+.tcard.is-cancelled { opacity: .55; filter: grayscale(1); }
+.tcard.is-cancelled .tcard-title { text-decoration: line-through; }
 .lock svg { width: 13px; height: 13px; margin-right: 4px; vertical-align: -2px; color: var(--warn); }
 .tcard-deps { font-size: 11.5px; color: var(--muted); }
 .tcard-deps .is-done { text-decoration: line-through; color: var(--faint); }
@@ -697,12 +704,7 @@ pre.cmd { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--su
 .report-body h2 { font-size: 17px; margin: 14px 0 8px; }
 .report-body h3 { font-size: 14px; margin: 18px 0 6px; color: var(--accent-text); }
 
-@media (max-width: 1180px) {
-  .has-side .net-layout { grid-template-columns: minmax(0, 1fr) minmax(280px, 0.75fr); }
-}
 @media (max-width: 960px), (max-height: 560px) {
-  .shell { flex-direction: column; }
-  .side, .side.is-wide { width: auto; border-left: 0; border-top: 1px solid var(--line-soft); order: -1; }
   .top { flex-wrap: wrap; white-space: normal; }
   .top .stats { height: auto; }
   .kanban { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -711,11 +713,6 @@ pre.cmd { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--su
 @media (max-width: 640px) { .kanban { grid-template-columns: minmax(0, 1fr); } .cmd-form .select { width: 100%; } }
 .tcard-foot { flex-wrap: wrap; }
 .tcard-foot .select { min-width: 92px; }
-/* 확인 패널을 펼치면 본문이 좁아진다: 카드는 2열 고정, 카드 칸은 2열이 들어갈 폭(440px)을 지킨다 */
-@media (min-width: 961px) and (min-height: 561px) {
-  .has-side .net-layout { grid-template-columns: minmax(240px, 1fr) minmax(440px, 0.9fr); }
-  .has-side .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
 
 /* ── 입력 요청 모달 (화면을 가리는 건 이것뿐 — 승인은 확인 패널) ── */
 .ask { width: min(760px, calc(100vw - 32px)); }
