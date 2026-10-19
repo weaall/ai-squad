@@ -22,7 +22,7 @@ import { LOGIN_COMMAND, runnerStatuses } from '../lib/runners/index.mjs';
 import { decideApproval, decisionText, loadApprovals } from '../lib/approvals.mjs';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp' };
 const MAX_BODY = 64 * 1024; // 입력 요청 미리보기 본문(8000자, 한글이면 ~24KB)이 들어가야 한다
 
 function send(res, code, body, type = 'application/json; charset=utf-8', extra = {}) {

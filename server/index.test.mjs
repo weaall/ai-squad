@@ -51,6 +51,9 @@ test('보드 서버: 토큰·상태·POST·승인·켜기끄기·SSE·보안', a
     assert.match(first.headers.get('set-cookie'), /HttpOnly/);
     assert.match(first.headers.get('set-cookie'), /SameSite=Strict/);
     assert.equal((await fetch(base + '/')).status, 200, '화면 파일은 토큰 없이도 받는다(안내를 보여 주려고)');
+    const logo = await fetch(base + '/brand/logo.png');
+    assert.equal(logo.status, 200, '로고·파비콘도 토큰 없이');
+    assert.equal(logo.headers.get('content-type'), 'image/png');
 
     const st = await (await get('/api/state?project=p')).json();
     assert.equal(st.members.length, 2);
