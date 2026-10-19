@@ -4,15 +4,52 @@ const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESC[c]);
 
 /**
- * 확인할 일 목록 — 급한 것 먼저: 승인 → 예산 → 계획(배정 기다림) → 로그인.
- * approvals 는 결정 안 된 것만 넘긴다. → [{key, type: 'approval'|'budget'|'plan'|'login', ...}]
+ * 확인할 일 목록 — 급한 것 먼저: 승인 → 막힘 → 답 없는 질문 → 예산 → 계획(배정 기다림) → 로그인.
+ * approvals 는 결정 안 된 것만 넘긴다. unanswered: 서버가 오래 답이 없다고 본 메시지 id.
+ * → [{key, type: 'approval'|'blocked'|'question'|'budget'|'plan'|'login', ...}]
  */
-export function confirmItems({ approvals = [], plan = null, runners = [] }) {
+export function confirmItems({ approvals = [], tasks = [], messages = [], unanswered = [], plan = null, runners = [] }) {
   const ap = approvals.filter((a) => a.action !== 'budget').map((a) => ({ key: `ap:${a.id}`, type: 'approval', a }));
+  // 막힐 때마다 새 카드(updatedAt) — 재시도 뒤 또 막히면 다시 올라온다
+  const bl = tasks.filter((t) => t.status === 'blocked').map((t) => ({ key: `bl:${t.id}|${t.updatedAt || ''}`, type: 'blocked', t }));
+  const late = new Set(unanswered);
+  const qu = messages
+    .filter((m, i) => m.kind === 'question' && late.has(m.id) && m.from !== 'human' && m.to !== 'human' && !humanReplied(messages, i))
+    .map((m) => ({ key: `q:${m.id}`, type: 'question', m }));
   const bu = approvals.filter((a) => a.action === 'budget').map((a) => ({ key: `ap:${a.id}`, type: 'budget', a }));
   const pl = plan ? [{ key: `plan:${plan.instruction}`, type: 'plan' }] : [];
   const lo = runners.filter((r) => r.canLogin).map((r) => ({ key: `login:${r.name}`, type: 'login', r }));
-  return [...ap, ...bu, ...pl, ...lo];
+  return [...ap, ...bl, ...qu, ...bu, ...pl, ...lo];
+}
+
+/** messages[i] 뒤에 사람이 그 질문한 멤버에게(작업이 있으면 같은 작업으로) 답·메모를 보냈는지 — 대신 답하기·넘기기 포함. */
+const humanReplied = (messages, i) => {
+  const m = messages[i];
+  return messages.slice(i + 1).some((r) => r.from === 'human' && r.to === m.from && (!m.taskId || r.taskId === m.taskId));
+};
+
+/** 멤버가 사람에게 물었는데 아직 답하지 않은 질문. */
+export const humanQuestions = (messages = []) =>
+  messages.filter((m, i) => m.kind === 'question' && m.to === 'human' && m.from !== 'human' && !humanReplied(messages, i));
+
+/** 사람에게 온 질문 → 입력 요청 모달이 다루는 모양(답 칸 하나). input.msg 가 있으면 답은 answer 메시지로 보낸다. */
+export const questionInput = (m, tasks = []) => ({
+  id: m.taskId || m.id,
+  title: tasks.find((t) => t.id === m.taskId)?.title || '질문',
+  input: { kind: 'form', from: m.from, title: '질문에 답해 주세요', text: m.text, at: m.at, msg: m, fields: [{ name: 'answer', label: '답', required: true }] },
+});
+
+/** 입력 요청 모달 목록: 작업 입력 요청 + 사람에게 온 질문, 먼저 온 것부터. */
+export const askItems = (tasks = [], messages = []) =>
+  [...pendingInputs(tasks), ...humanQuestions(messages).map((m) => questionInput(m, tasks))]
+    .sort((a, b) => String(a.input.at).localeCompare(String(b.input.at)));
+
+/** 막힘 카드 단추 → 서버 요청. act: retry|reassign|done|cancel. 다른 멤버에게는 member 가 있어야 한다. */
+export function blockedAction(act, taskId, { note = '', member = '' } = {}) {
+  if (!['retry', 'reassign', 'done', 'cancel'].includes(act)) return { error: '모르는 동작입니다' };
+  if (act === 'reassign' && !member) return { error: '넘길 멤버를 고르세요' };
+  const body = { ...(note.trim() ? { note: note.trim() } : {}), ...(act === 'reassign' ? { member } : {}) };
+  return { url: `/api/task/${encodeURIComponent(taskId)}/${act}`, body };
 }
 
 /**

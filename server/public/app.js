@@ -1,6 +1,6 @@
 // AI Squad 보드 화면. 프레임워크 없이 상태 하나를 받아 전부 다시 그린다.
 import { SIZE, character, drawCharacter } from './pixel.js';
-import { STATUS_FALLBACK, budgetLevel, canApprove, confirmItems, inputKey, inputPayload, looksLikeDiff, orderOutcome, panelDecision, pendingInputs, renderDiff, todoCounts, viewStatus } from './logic.js';
+import { STATUS_FALLBACK, askItems, blockedAction, budgetLevel, canApprove, confirmItems, inputKey, inputPayload, looksLikeDiff, orderOutcome, panelDecision, renderDiff, todoCounts, viewStatus } from './logic.js';
 const $ = (s) => document.querySelector(s);
 const KIND = { order: '지시', handoff: '인계', question: '질문', answer: '답변', report: '완료 보고', note: '메모' };
 const TASK_COLS = [['todo', '할 일'], ['doing', '진행 중'], ['review', '검수'], ['blocked', '막힘'], ['done', '완료']];
@@ -960,7 +960,10 @@ const side = $('#side');
 const sideUi = { open: store('squad.side') === '1', seen: new Set(), rejecting: null, viewed: new Set(), expanded: new Set(), fresh: new Set() };
 const BASE_TITLE = document.title;
 const pendingApprovals = () => (ui.data?.approvals || []).filter((a) => a.status === 'pending');
-const items = () => confirmItems({ approvals: pendingApprovals(), plan: order.plan ? order : null, runners: ui.runners });
+const items = () => confirmItems({
+  approvals: pendingApprovals(), tasks: ui.data?.tasks, messages: ui.data?.messages, unanswered: ui.data?.unanswered,
+  plan: order.plan ? order : null, runners: ui.runners,
+});
 function updateTitle(n) {
   document.title = document.hidden && n ? `(확인 ${n}) ${BASE_TITLE}` : BASE_TITLE;
 }
@@ -994,6 +997,8 @@ const btn = (act, label, cls = '', extra = '') => `<button type="button" class="
 /** 영향 범위: 요청에 적힌 scope, 없으면 그 멤버의 담당 경로 */
 const scopeOf = (from, scope) => scope || (member(from)?.owns || []).join(', ') || '적지 않음';
 const RISK = { low: '낮음', medium: '보통', high: '높음' };
+/** 넘길 멤버 고르기 — 오더와 skip 에 든 멤버는 빼고 */
+const pick = (skip) => `<select class="select sc-pick" data-pick aria-label="넘길 멤버">${ui.data.members.filter((m) => m.id !== 'order' && !skip.includes(m.id)).map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('')}</select>`;
 
 function detailBlock(a) {
   const task = a.taskId && ui.data.tasks.find((t) => t.id === a.taskId);
@@ -1031,6 +1036,32 @@ function cardHtml(it) {
       ${!allow ? '<p class="muted small">위험도 높음 — 상세를 펼쳐 본 뒤 승인할 수 있습니다</p>' : ''}
     </li>`;
   }
+  if (it.type === 'blocked') {
+    const t = it.t;
+    const logs = (ui.data.events || []).filter((e) => e.taskId === t.id).slice(-10).map(eventLabel);
+    const files = t.diffStat || [];
+    const why = [t.blockedReason, t.summary].filter(Boolean).join('\n\n') || '적지 않음';
+    return `<li class="side-card t-blocked${fresh}" data-key="${esc(it.key)}">
+      <div class="sc-head">${avatar(t.member, 'sm')}<div class="sc-title"><b>막힘 — ${esc(t.title)}</b><small>${esc(nameOf(t.member))} · ${esc(rel(t.updatedAt))} · <span class="mono">${esc(t.id)}</span></small></div></div>
+      <div class="ap-detail">
+        <section><h4>막힌 이유</h4><p class="handoff sc-why">${esc(why)}</p></section>
+        ${logs.length ? `<section><h4>실행 로그 마지막 ${logs.length}줄</h4><pre class="cmd">${logs.map(esc).join('\n')}</pre></section>` : ''}
+        ${files.length ? `<section><h4>바뀐 파일 ${files.length}개</h4><ul class="paths">${files.map((f) => `<li class="mono" title="${esc(f.path)}">${esc(f.path)} +${f.add} -${f.del}</li>`).join('')}</ul></section>` : ''}
+      </div>
+      <label class="reject-box"><span>메모 (재시도·넘길 때 작업 내용에 붙습니다)</span><textarea class="input" data-note rows="2" maxlength="500"></textarea></label>
+      <div class="sc-actions">${pick([t.member])}${btn('reassign', '다른 멤버에게')}</div>
+      <div class="sc-actions">${btn('cancel', '취소', 'btn-danger') + btn('done', '완료로 처리') + btn('retry', '재시도', 'btn-primary')}</div>
+    </li>`;
+  }
+  if (it.type === 'question') {
+    const m = it.m;
+    return `<li class="side-card t-question${fresh}" data-key="${esc(it.key)}">
+      <div class="sc-head">${avatar(m.from, 'sm')}<div class="sc-title"><b>답 없는 질문 — ${esc(nameOf(m.from))} → ${esc(nameOf(m.to))}</b><small>${esc(rel(m.at))}${m.taskId ? ` · <span class="mono">${esc(m.taskId)}</span>` : ''}</small></div></div>
+      <p class="handoff sc-why">${esc(m.text)}</p>
+      <label class="reject-box"><span>대신 답하기 (${esc(nameOf(m.from))} 에게 갑니다)</span><textarea class="input" data-note rows="2" maxlength="2000"></textarea></label>
+      <div class="sc-actions">${pick([m.from, m.to])}${btn('forward', '넘기기') + btn('answer', '답 보내기', 'btn-primary')}</div>
+    </li>`;
+  }
   if (it.type === 'plan') {
     const owners = [...new Set(order.plan.map((p) => p.member))];
     return `<li class="side-card t-plan${fresh}" data-key="${esc(it.key)}">
@@ -1052,16 +1083,17 @@ function renderSide(list = items()) {
   side.classList.toggle('is-wide', [...sideUi.expanded].some((k) => list.some((i) => i.key === k)));
   const box = $('#side-list');
   const html = list.map(cardHtml).join('') || '<li class="empty">확인할 일이 없습니다</li>';
-  // 같은 내용이면 다시 그리지 않는다(읽던 상세의 스크롤·포커스 유지). 거절 사유를 쓰는 중이면 글과 포커스를 지킨다.
+  // 같은 내용이면 다시 그리지 않는다(읽던 상세의 스크롤·포커스 유지). 카드마다 쓰던 메모·고른 멤버와 포커스를 지킨다.
   if (box.dataset.html === html) return;
   box.dataset.html = html;
-  const ta0 = box.querySelector('[data-note]');
-  const note = ta0?.value;
-  const focused = ta0 && document.activeElement === ta0;
+  const slot = (x) => `${x.closest('[data-key]')?.dataset.key}|${x.tagName}`;
+  const kept = new Map([...box.querySelectorAll('[data-note], [data-pick]')].map((x) => [slot(x), x.value]));
+  const focused = box.contains(document.activeElement) ? slot(document.activeElement) : null;
   box.innerHTML = html;
-  const ta = box.querySelector('[data-note]');
-  if (ta && note) ta.value = note;
-  if (ta && focused) ta.focus();
+  for (const x of box.querySelectorAll('[data-note], [data-pick]')) {
+    if (kept.get(slot(x))) x.value = kept.get(slot(x));
+    if (slot(x) === focused) x.focus();
+  }
   paintSprites();
 }
 
@@ -1089,6 +1121,7 @@ $('#side-list').addEventListener('click', async (e) => {
   else if (act === 'reject-send') await decide(it.a, 'rejected', card.querySelector('[data-note]')?.value || '');
   else if (act === 'plan-confirm') await confirmPlan();
   else if (act === 'plan-cancel') cancelPlan();
+  else if (it.type === 'blocked' || it.type === 'question') await humanAct(it, act, card.querySelector('[data-note]')?.value || '', card.querySelector('[data-pick]')?.value || '');
   else if (act === 'login') await openLogin(it.r.name);
   sideUi.rejecting = null;
   syncSide();
@@ -1112,6 +1145,37 @@ async function decide(a, decision, note = '') {
   await load();
 }
 
+const DONE_TOAST = { retry: '할 일로 되돌렸습니다', reassign: '다른 멤버에게 넘겼습니다', done: '완료로 처리했습니다', cancel: '작업을 취소했습니다' };
+/** 막힘 카드(재시도·넘기기·완료·취소)와 답 없는 질문 카드(대신 답하기·넘기기). */
+async function humanAct(it, act, note, to) {
+  try {
+    if (it.type === 'blocked') {
+      if (act === 'cancel' && !confirm(`작업을 취소할까요? ${it.t.title}`)) return;
+      const r = blockedAction(act, it.t.id, { note, member: to });
+      if (r.error) return toast(r.error);
+      await api(r.url, { project: ui.project, ...r.body });
+      toast(DONE_TOAST[act]);
+    } else {
+      const m = it.m;
+      if (act === 'answer') {
+        if (!note.trim()) return toast('답을 적어 주세요');
+        await sendAnswer(m, note.trim());
+      } else {
+        if (!to) return toast('넘길 멤버를 고르세요');
+        // 질문은 원래 물은 멤버 이름으로 넘겨 답이 그쪽으로 가게 하고, 물은 멤버에게 알린다(카드도 이것으로 내려간다)
+        await api('/api/messages', { project: ui.project, from: m.from, to, kind: 'question', taskId: m.taskId, text: m.text });
+        await api('/api/messages', { project: ui.project, from: 'human', to: m.from, kind: 'note', taskId: m.taskId, text: `질문을 ${nameOf(m.to)} 대신 ${nameOf(to)} 에게 넘겼습니다${note.trim() ? `: ${note.trim()}` : ''}` });
+      }
+      toast(act === 'answer' ? '답을 보냈습니다' : '질문을 넘겼습니다');
+    }
+  } catch (x) {
+    toast(x.message);
+  }
+  await load();
+}
+/** 사람이 멤버 질문에 답한다 — 서버가 기다리던 작업을 todo 로 돌리고 대기열을 깨운다. */
+const sendAnswer = (m, text) => api('/api/messages', { project: ui.project, from: 'human', to: m.from, kind: 'answer', taskId: m.taskId, text });
+
 /** 작업 탭으로 가서 그 카드를 잠깐 강조한다. */
 function gotoTask(id) {
   location.hash = '#tasks';
@@ -1130,7 +1194,7 @@ const INPUT_KIND = { preview: '발송 미리보기', choice: '디자인안 선�
 const ask = $('#ask');
 // shown: 한 번 띄운 요청(닫으면 다시 저절로 뜨지 않는다 — 상단 [입력 대기] 로 다시 연다)
 const askUi = { key: null, shown: new Set(), busy: false, opener: null };
-const askList = () => pendingInputs(ui.data?.tasks);
+const askList = () => askItems(ui.data?.tasks, ui.data?.messages);
 
 /** 상태가 바뀔 때마다: 배지를 맞추고, 처음 보는 요청이 있으면 띄운다. 보던 요청이 처리됐으면 다음으로. */
 function syncAsk() {
@@ -1213,7 +1277,9 @@ async function submitAsk(submitter) {
   askUi.busy = true;
   form.querySelectorAll('button').forEach((b) => (b.disabled = true));
   try {
-    await api('/api/input/answer', { project: ui.project, ...r.body });
+    const q = task.input.msg;
+    if (q) await sendAnswer(q, [r.body.values.answer, r.body.note].filter(Boolean).join('\n\n'));
+    else await api('/api/input/answer', { project: ui.project, ...r.body });
     toast('답을 보냈습니다. 작업이 할 일로 돌아갑니다');
   } catch (x) {
     err.textContent = x.message;

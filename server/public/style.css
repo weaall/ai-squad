@@ -630,6 +630,10 @@ textarea.input { resize: vertical; line-height: 1.5; }
 .side-card.t-approval { border-left: 3px solid var(--warn); }
 .side-card.t-budget { border-left: 3px solid var(--blocked); }
 .side-card.t-plan { border-left: 3px solid var(--accent); }
+.side-card.t-blocked { border-left: 3px solid var(--blocked); }
+.side-card.t-question { border-left: 3px solid var(--k-question); }
+.sc-why { max-height: 160px; overflow-y: auto; overflow-wrap: anywhere; margin: 0; }
+.sc-pick { flex: 1; min-width: 0; font-size: 12px; padding-top: 4px; padding-bottom: 4px; }
 .side-card.is-fresh, .tcard.is-fresh { animation: fresh .15s ease-out 2 alternate; }
 @keyframes fresh { to { box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 70%, transparent); background: color-mix(in srgb, var(--warn) 10%, var(--surface)); } }
 .sc-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
