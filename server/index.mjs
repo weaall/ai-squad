@@ -7,7 +7,8 @@ import {
   appendJsonl, isId, loadMembers, loadProjects, newId, projectPaths, readJsonl, readMemberDocs, updateTask,
 } from '../lib/store.mjs';
 import { buildState } from '../lib/state.mjs';
-import { validateMessage, validateTask, validateTaskPatch } from '../lib/validate.mjs';
+import { validateMessage, validateOrder, validatePlan, validateTask, validateTaskPatch } from '../lib/validate.mjs';
+import { planOrder, saveOrder } from '../lib/runner.mjs';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
@@ -64,7 +65,12 @@ function signature(paths) {
     .join('|');
 }
 
-export function startBoard({ root, port = 4777, demo = false, host = '127.0.0.1', quiet = false }) {
+/**
+ * planner: 계획을 만드는 함수(기본은 claude 를 부르는 planOrder). 시험에서는 가짜를 넣는다.
+ */
+export function startBoard({ root, port = 4777, demo = false, host = '127.0.0.1', quiet = false, planner = planOrder }) {
+  // ponytail: 서버 전체에 계획 1건만. 프로젝트별로 동시에 돌려야 하면 Map 으로.
+  let ordering = false;
   const clients = new Set(); // { res, project }
   const sigs = new Map();
   const allowedOrigins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
@@ -146,6 +152,28 @@ export function startBoard({ root, port = 4777, demo = false, host = '127.0.0.1'
         const v = validateTask(body, ids);
         if (v.error) return send(res, 400, v);
         return send(res, 201, appendJsonl(p.tasks, { id: newId('T'), ...v, createdBy: 'human', createdAt: at, updatedAt: at, summary: '' }));
+      }
+      if (url.pathname === '/api/order') {
+        const v = validateOrder(body);
+        if (v.error) return send(res, 400, v);
+        if (ordering) return send(res, 409, { error: '이미 계획을 만드는 중입니다. 끝난 뒤 다시 보내 주세요' });
+        ordering = true;
+        try {
+          const plan = await planner({ root, paths: p, members: loadMembers(p), instruction: v.instruction, stderr: 'pipe' });
+          if (!plan.length) return send(res, 502, { error: '메인 오더가 배정할 작업을 내놓지 않았습니다. 지시를 더 구체적으로 써 주세요' });
+          return send(res, 200, { instruction: v.instruction, plan });
+        } catch (e) {
+          return send(res, 502, { error: `계획을 만들지 못했습니다: ${e.message}` });
+        } finally {
+          ordering = false;
+        }
+      }
+      if (url.pathname === '/api/order/confirm') {
+        const o = validateOrder(body);
+        if (o.error) return send(res, 400, o);
+        const v = validatePlan(body.plan, ids);
+        if (v.error) return send(res, 400, v);
+        return send(res, 201, { tasks: saveOrder({ paths: p, members: loadMembers(p), instruction: o.instruction, plan: v.plan }) });
       }
       if (url.pathname === '/api/tasks/update') {
         if (typeof body.id !== 'string' || body.id.length > 60) return send(res, 400, { error: '작업 id 가 잘못됐습니다' });

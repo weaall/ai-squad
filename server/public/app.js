@@ -1,9 +1,9 @@
 // AI Squad 보드 화면. 프레임워크 없이 상태 하나를 받아 전부 다시 그린다.
+import { SIZE, character, drawCharacter } from './pixel.js';
 const $ = (s) => document.querySelector(s);
 const STATUS = { working: '일하는 중', idle: '대기', blocked: '막힘' };
 const KIND = { order: '지시', handoff: '인계', question: '질문', answer: '답변', report: '완료 보고', note: '메모' };
 const TASK_COLS = [['todo', '할 일'], ['doing', '진행 중'], ['blocked', '막힘'], ['done', '완료']];
-const PALETTE = ['#5b6fd6', '#3f8fbf', '#2f9e86', '#8a63d2', '#c2753a', '#c25674', '#4b7bd8', '#6c8a3a', '#9a5bb5'];
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
 const ui = {
@@ -11,8 +11,11 @@ const ui = {
   project: '',
   data: null,
   view: 'network',
+  tab: 'squad',
   selected: null,
   openRows: new Set(),
+  openTech: new Set(),
+  frame: 0,
   seenMsgs: null,
   seenEvents: null,
   newMsgIds: new Set(),
@@ -41,22 +44,32 @@ function rel(at) {
   return `${d.getMonth() + 1}월 ${d.getDate()}일`;
 }
 const fullTime = (at) => new Date(at).toLocaleString('ko-KR');
-function colorOf(id) {
-  let h = 0;
-  for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return PALETTE[h % PALETTE.length];
-}
-function initials(m) {
-  if (m.initials) return m.initials.slice(0, 2);
-  const parts = m.id.split('-');
-  return (parts.length > 1 ? parts.map((p) => p[0]).join('') : m.id.slice(0, 2)).slice(0, 2).toUpperCase();
-}
 const member = (id) => ui.data?.members.find((m) => m.id === id);
 const nameOf = (id) => (id === 'human' ? '사람' : member(id)?.name || id);
+// 아바타 = 픽셀 캐릭터. 빈 canvas 를 넣고 paintSprites() 가 그린다.
 function avatar(id, size = '') {
   if (id === 'human') return `<span class="avatar is-human ${size}" aria-hidden="true">나</span>`;
   const m = member(id) || { id };
-  return `<span class="avatar ${size} st-${m.status || 'idle'}" style="--c:${colorOf(id)}" aria-hidden="true">${esc(initials(m))}</span>`;
+  return `<span class="avatar ${size} st-${m.status || 'idle'}" aria-hidden="true"><canvas class="sprite" width="${SIZE}" height="${SIZE}" data-sprite="${esc(id)}"></canvas></span>`;
+}
+/** 화면의 모든 캐릭터를 지금 프레임으로 그린다. 움직임 줄이기면 늘 0 프레임. */
+function paintSprites() {
+  const frame = reduceMotion.matches ? 0 : ui.frame;
+  for (const c of document.querySelectorAll('canvas[data-sprite]')) {
+    const id = c.dataset.sprite;
+    const st = member(id)?.status || 'idle';
+    const key = `${st}|${frame}`;
+    if (c.dataset.drawn === key) continue;
+    const ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, SIZE, SIZE);
+    drawCharacter(ctx, character(id, { status: st, frame }), 0, 0, 1);
+    c.dataset.drawn = key;
+  }
+}
+const techCount = (m) => (m.model ? 1 : 0) + (m.runner !== 'claude' ? 1 : 0) + m.tools.length + m.plugins.length;
+function techBlock(m) {
+  return `<dl class="kv"><dt>실행</dt><dd>${esc(m.runner)}</dd><dt>모델</dt><dd>${esc(m.model || '기본값')}</dd><dt>도구</dt><dd>${esc(m.tools.join(', ') || '기본(Read·Edit·Write·Glob·Grep)')}</dd></dl>
+    ${m.plugins.length ? `<div class="chips">${m.plugins.map((p) => `<span class="chip">${esc(p)}</span>`).join('')}</div>` : '<p class="muted small">플러그인·스킬·MCP 없음</p>'}`;
 }
 const pill = (s) => `<span class="pill st-${s}"><i class="dot st-${s}"></i>${STATUS[s] || s}</span>`;
 const kindTag = (k) => `<span class="kind" style="--kc:var(--k-${esc(k)})">${esc(KIND[k] || k)}</span>`;
@@ -145,7 +158,10 @@ function render() {
   renderRows();
   renderKanban();
   renderConvo();
-  if (ui.selected) renderDrawer(false);
+  const empty = !d.demo && !d.messages.length && !d.tasks.length && !d.events.length;
+  $('#net-empty').hidden = !empty;
+  if (ui.selected) renderModal();
+  paintSprites();
 }
 
 function fillSelects() {
@@ -171,15 +187,17 @@ function fillSelects() {
 function renderCards() {
   const html = ui.data.members.map((m) => {
     const ev = m.lastEvent;
-    const chips = [m.model && `<span class="chip is-model">${esc(m.model)}</span>`, m.runner !== 'claude' && `<span class="chip">${esc(m.runner)}</span>`,
-      ...m.plugins.slice(0, 3).map((p) => `<span class="chip">${esc(p)}</span>`), m.plugins.length > 3 && `<span class="chip">+${m.plugins.length - 3}</span>`].filter(Boolean).join('');
-    return `<button type="button" class="card${ui.selected === m.id ? ' is-selected' : ''}" data-member="${esc(m.id)}">
-      <div class="card-head">${avatar(m.id)}<div><div class="card-name">${esc(m.name)}</div><div class="card-id">${esc(m.id)}${m.pending ? ` · 대기 ${m.pending}` : ''}</div></div>${pill(m.status)}</div>
-      <div class="card-task${m.current ? '' : ' is-empty'}" title="${esc(m.current)}">${esc(m.current || '맡은 작업 없음')}</div>
+    const n = techCount(m);
+    const open = ui.openTech.has(m.id);
+    return `<article class="card st-${m.status}${ui.selected === m.id ? ' is-selected' : ''}" data-member="${esc(m.id)}">
+      <div class="card-head">${avatar(m.id)}
+        <div class="card-who"><button type="button" class="link card-name" data-open="${esc(m.id)}">${esc(m.name)}</button>
+        <div class="card-id">${esc(m.id)}${m.pending ? ` · 대기 ${m.pending}` : ''}</div></div>${pill(m.status)}</div>
+      <button type="button" class="card-task${m.current ? '' : ' is-empty'}" data-open="${esc(m.id)}" aria-label="${esc(m.name)} 자세히: ${esc(m.current || '맡은 작업 없음')}">${esc(m.current || '맡은 작업 없음')}</button>
       <div class="card-event">${ev ? `<span title="${esc(eventLabel(ev))}">${esc(eventLabel(ev))}</span><time datetime="${esc(ev.at)}" title="${esc(fullTime(ev.at))}">${rel(ev.at)}</time>` : '<span>이벤트 없음</span>'}</div>
-      ${m.owns.length ? `<div class="card-owns" title="${esc(m.owns.join('\n'))}">${esc(m.owns.slice(0, 2).join(', '))}${m.owns.length > 2 ? ` 외 ${m.owns.length - 2}` : ''}</div>` : ''}
-      ${chips ? `<div class="chips">${chips}</div>` : ''}
-    </button>`;
+      <button type="button" class="tech-toggle" data-tech="${esc(m.id)}" aria-expanded="${open}" aria-controls="tech-${esc(m.id)}">사용 기술 ${n}개 ${ICON_CHEV}</button>
+      <div class="tech" id="tech-${esc(m.id)}"${open ? '' : ' hidden'}>${techBlock(m)}</div>
+    </article>`;
   }).join('');
   $('#cards').innerHTML = html || '<p class="empty">멤버가 없습니다. <code>node bin/squad.mjs init</code> 으로 스쿼드를 만드세요.</p>';
 }
@@ -217,10 +235,7 @@ function renderRows() {
       </summary>
       <div class="row-body">
         <div>
-          <h3>AI·도구</h3>
-          <dl class="kv"><dt>실행</dt><dd>${esc(m.runner)}</dd><dt>모델</dt><dd>${esc(m.model || '기본값')}</dd><dt>도구</dt><dd>${esc(m.tools.join(', ') || '기본(Read·Edit·Write·Glob·Grep)')}</dd></dl>
-          <h3>플러그인·스킬·MCP</h3>
-          ${m.plugins.length ? `<div class="chips" style="margin-bottom:14px">${m.plugins.map((p) => `<span class="chip">${esc(p)}</span>`).join('')}</div>` : '<p class="empty">없음</p>'}
+          <h3>사용 기술 ${techCount(m)}</h3>${techBlock(m)}
           <h3>담당 경로</h3>${pathList(m.owns)}
         </div>
         <div>
@@ -254,7 +269,7 @@ function renderKanban() {
           <select class="select" data-field="member" aria-label="담당 바꾸기">${memberOpts(t.member)}</select>
           <select class="select st" data-field="status" aria-label="상태 바꾸기">${statusOpts(t.status)}</select>
         </div>
-      </article>`).join('') || '<p class="empty">비어 있음</p>'}
+      </article>`).join('') || `<p class="empty">${!d.tasks.length && s === 'todo' ? '아직 작업이 없습니다 — 위 지시 창에 첫 지시를 입력하세요' : '비어 있음'}</p>`}
       ${total > list.length ? `<div class="more">${total - list.length}개 더</div>` : ''}
     </div>`;
   }).join('');
@@ -272,7 +287,7 @@ function renderConvo() {
       <div class="msg-text">${esc(m.text)}</div>
       ${m.taskId ? `<div class="msg-task mono">${esc(m.taskId)}</div>` : ''}
     </div>
-  </li>`).join('') || '<li class="empty">아직 주고받은 메시지가 없습니다.<br>아래에서 보내거나 <code>squad msg</code> 로 남기세요.</li>';
+  </li>`).join('') || '<li class="empty">아직 기록이 없습니다 — 위 지시 창에 첫 지시를 입력하세요.<br>아래에서 메시지를 보내거나 <code>squad msg</code> 로 남길 수도 있습니다.</li>';
   ui.newMsgIds.clear();
   if (nearBottom || !renderConvo.done) box.scrollTop = box.scrollHeight;
   renderConvo.done = true;
@@ -320,47 +335,80 @@ function mdToHtml(src) {
 }
 
 const docs = new Map();
-async function openDrawer(id) {
+// ── 멤버 상세 모달 (native dialog: Esc·바깥 클릭·닫기 단추, 바깥은 inert) ──
+const modal = $('#modal');
+let opener = null;
+async function openModal(id) {
+  if (!member(id)) return;
+  opener = document.activeElement;
   ui.selected = id;
-  $('#drawer').hidden = false;
-  $('#scrim').hidden = false;
-  renderDrawer(true);
-  renderCards();
+  renderModal();
+  if (!modal.open) modal.showModal();
+  $('#modal-close').focus();
   try {
     docs.set(id, await api(`/api/member?project=${encodeURIComponent(ui.project)}&id=${encodeURIComponent(id)}`));
-    if (ui.selected === id) renderDrawer(false);
+    if (ui.selected === id) renderModal();
   } catch (e) {
     toast(e.message);
   }
-  $('#drawer-close').focus();
 }
-function closeDrawer() {
-  const id = ui.selected;
+function closeModal() {
+  if (modal.open) modal.close();
+}
+modal.addEventListener('close', () => {
   ui.selected = null;
-  $('#drawer').hidden = true;
-  $('#scrim').hidden = true;
-  renderCards();
-  document.querySelector(`.card[data-member="${CSS.escape(id || '')}"]`)?.focus();
-}
-function renderDrawer() {
+  modal.dataset.html = '';
+  if (opener?.isConnected) opener.focus();
+  else if (opener?.dataset?.open) document.querySelector(`[data-open="${CSS.escape(opener.dataset.open)}"]`)?.focus();
+});
+// 바깥(배경) 클릭: dialog 자체를 누른 경우만 닫는다 — 안쪽 상자는 .modal-box
+modal.addEventListener('click', (e) => {
+  if (e.target === modal) closeModal();
+});
+// 포커스를 모달 안에서만 돌린다
+modal.addEventListener('keydown', (e) => {
+  if (e.key !== 'Tab') return;
+  const f = [...modal.querySelectorAll('button, [href], summary, select, input, textarea, [tabindex]:not([tabindex="-1"])')].filter((el) => !el.disabled && el.offsetParent !== null);
+  if (!f.length) return;
+  const first = f[0], last = f.at(-1);
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
+$('#modal-close').addEventListener('click', closeModal);
+
+function renderModal() {
   const m = member(ui.selected);
-  if (!m) return closeDrawer();
+  if (!m) return closeModal();
   const d = ui.data;
-  $('#drawer-avatar').innerHTML = avatar(m.id, 'lg');
-  $('#drawer-title').textContent = m.name;
-  $('#drawer-sub').innerHTML = `${esc(m.id)} · ${pill(m.status)}`;
   const doc = docs.get(m.id);
-  const mine = d.tasks.filter((t) => t.member === m.id);
-  $('#drawer-body').innerHTML = `
-    <section><h3>지금 작업</h3><p class="handoff">${esc(m.current || '맡은 작업 없음')}</p></section>
-    <section><h3>AI·플러그인</h3><div class="chips">
-      <span class="chip">${esc(m.runner)}</span><span class="chip is-model">${esc(m.model || '기본 모델')}</span>
-      ${m.plugins.map((p) => `<span class="chip">${esc(p)}</span>`).join('')}</div></section>
-    <section><h3>담당 경로</h3>${pathList(m.owns)}</section>
-    <section><h3>작업 ${mine.length}</h3>${taskList(mine.slice().reverse())}</section>
-    <section><h3>최근 이벤트 30</h3>${eventList(d.events.filter((e) => e.member === m.id), 30)}</section>
-    <details class="doc" open><summary>MEMBER.md</summary><div class="md">${doc ? mdToHtml(doc.member) : '<p class="muted">불러오는 중</p>'}</div></details>
-    <details class="doc"><summary>NOTES.md</summary><div class="md">${doc ? mdToHtml(doc.notes) || '<p class="muted">비어 있음</p>' : ''}</div></details>`;
+  const queued = d.tasks.filter((t) => t.member === m.id && t.status !== 'done');
+  const html = `
+    <div class="modal-grid">
+      <div>
+        <section><h3>역할</h3><p class="handoff">${esc(m.role || '적힌 역할이 없습니다')}</p></section>
+        <section><h3>지금 작업</h3><p class="handoff full">${esc(m.current || '맡은 작업 없음')}</p></section>
+        <section><h3>대기 작업 ${queued.length}</h3>${taskList(queued)}</section>
+        <section><h3>인계 메모</h3><p class="handoff">${esc(m.handoff || '없음')}</p></section>
+      </div>
+      <div>
+        <section><h3>최근 이벤트</h3>${eventList(d.events.filter((e) => e.member === m.id), 15)}</section>
+        <section><h3>담당 경로</h3>${pathList(m.owns)}</section>
+        <section><h3>사용 기술 ${techCount(m)}</h3>${techBlock(m)}</section>
+      </div>
+    </div>
+    <details class="doc"><summary>MEMBER.md 원문</summary><div class="md">${doc ? mdToHtml(doc.member) : '<p class="muted">불러오는 중</p>'}</div></details>
+    <details class="doc"><summary>NOTES.md 원문</summary><div class="md">${doc ? mdToHtml(doc.notes) || '<p class="muted">비어 있음</p>' : ''}</div></details>`;
+  const head = `${m.id}|${m.status}|${m.name}`;
+  // 같은 내용이면 다시 그리지 않는다(읽는 중 펼친 원문·스크롤 유지)
+  if (modal.dataset.html === html + head) return;
+  const openDocs = [...modal.querySelectorAll('details.doc')].map((x) => x.open);
+  modal.dataset.html = html + head;
+  $('#modal-avatar').innerHTML = avatar(m.id, 'lg');
+  $('#modal-title').textContent = m.name;
+  $('#modal-sub').innerHTML = `${esc(m.id)} · ${pill(m.status)}`;
+  $('#modal-body').innerHTML = html;
+  modal.querySelectorAll('details.doc').forEach((x, i) => (x.open = Boolean(openDocs[i])));
+  paintSprites();
 }
 
 // ── 연결 보기 캔버스 ──
@@ -586,9 +634,21 @@ const net = (() => {
         ctx.fill();
       }
       ctx.beginPath();
-      ctx.fillStyle = id === 'human' ? '#1b2546' : colorOf(id);
+      ctx.fillStyle = id === 'human' ? '#1b2546' : '#18224a';
       ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
       ctx.fill();
+      if (id !== 'human') {
+        // 픽셀 캐릭터: 원 안에 정수 배율로 (흐릿해지지 않게)
+        const px = Math.max(1, Math.floor((n.r * 1.7) / SIZE));
+        const size = px * SIZE;
+        ctx.imageSmoothingEnabled = false;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+        ctx.clip();
+        drawCharacter(ctx, character(id, { status: st, frame: still ? 0 : ui.frame }), n.x - size / 2, n.y - size / 2 + px, px);
+        ctx.restore();
+      }
       ctx.lineWidth = id === hover ? 3.5 : 2.5;
       ctx.strokeStyle = id === hover ? '#ffffff' : SC[st];
       ctx.beginPath();
@@ -597,8 +657,10 @@ const net = (() => {
       ctx.fillStyle = '#fff';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.font = `800 ${Math.round(n.r * (id === 'human' ? 0.62 : 0.56))}px ${font}`;
-      ctx.fillText(id === 'human' ? '나' : initials(m), n.x, n.y + 1);
+      if (id === 'human') {
+        ctx.font = `800 ${Math.round(n.r * 0.62)}px ${font}`;
+        ctx.fillText('나', n.x, n.y + 1);
+      }
       ctx.font = `700 ${W < 640 ? 11 : 12.5}px ${font}`;
       ctx.fillStyle = '#e8ecf8';
       ctx.fillText(m.name, n.x, n.y + n.r + 16);
@@ -624,7 +686,7 @@ const net = (() => {
   }
   function loop(now) {
     raf = 0;
-    if (ui.view !== 'network' || document.hidden) return;
+    if (!netVisible() || document.hidden) return;
     draw(now);
     if (busy()) raf = requestAnimationFrame(loop);
   }
@@ -661,13 +723,13 @@ const net = (() => {
   });
   canvas.addEventListener('click', (e) => {
     const h = hit(e);
-    if (h && h.id !== 'human') openDrawer(h.id);
+    if (h && h.id !== 'human') openModal(h.id);
   });
   new ResizeObserver(resize).observe(wrap);
   document.addEventListener('visibilitychange', kick);
   reduceMotion.addEventListener?.('change', kick);
   // 선이 옅어지는 것을 움직임 줄이기에서도 가끔 다시 그린다
-  setInterval(() => ui.view === 'network' && draw(performance.now()), 5000);
+  setInterval(() => netVisible() && draw(performance.now()), 5000);
   return { sync, message, event, kick, resize };
 })();
 
@@ -678,8 +740,100 @@ function setView(v) {
   for (const b of document.querySelectorAll('.seg-btn')) b.setAttribute('aria-selected', String(b.dataset.view === v));
   $('#view-network').hidden = v !== 'network';
   $('#view-monitor').hidden = v !== 'monitor';
+  $('#legend').hidden = v !== 'network';
+  $('#filters').hidden = v !== 'monitor';
   if (v === 'network') requestAnimationFrame(() => net.resize());
 }
+const netVisible = () => ui.tab === 'squad' && ui.view === 'network';
+
+// 상단 탭: 주소의 #squad / #tasks / #chat 으로 남긴다
+const TABS = ['squad', 'tasks', 'chat'];
+function setTab() {
+  const t = location.hash.slice(1);
+  ui.tab = TABS.includes(t) ? t : 'squad';
+  for (const id of TABS) {
+    $(`#tab-${id}`).setAttribute('aria-selected', String(id === ui.tab));
+    $(`#panel-${id}`).hidden = id !== ui.tab;
+  }
+  if (netVisible()) requestAnimationFrame(() => net.resize());
+  if (ui.tab === 'chat') {
+    const box = $('#convo');
+    box.scrollTop = box.scrollHeight;
+  }
+}
+window.addEventListener('hashchange', setTab);
+
+// ── 메인 오더에게 지시: 계획 만들기 → 이대로 배정 (두 단계) ──
+const order = { plan: null, instruction: '', busy: false };
+function renderPlan() {
+  const box = $('#order-plan');
+  if (!order.plan) {
+    box.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  const groups = new Map();
+  for (const p of order.plan) groups.set(p.member, [...(groups.get(p.member) || []), p]);
+  box.hidden = false;
+  box.innerHTML = `<div class="plan-head"><b>계획</b><span class="muted">작업 ${order.plan.length}개 · 아직 저장하지 않았습니다</span>
+      <div class="plan-actions"><button type="button" class="btn btn-ghost" id="plan-cancel">취소</button><button type="button" class="btn btn-primary" id="plan-confirm">이대로 배정</button></div></div>
+    <div class="plan-groups scroll">${[...groups].map(([id, list]) => `<div class="plan-group">
+      <div class="plan-who">${avatar(id, 'sm')}<b>${esc(nameOf(id))}</b><span class="muted">${list.length}개</span></div>
+      <ul>${list.map((p) => `<li><div class="plan-title">${esc(p.title)}</div>${p.detail ? `<div class="plan-detail">${esc(p.detail)}</div>` : ''}${p.why ? `<div class="plan-why">${esc(p.why)}</div>` : ''}</li>`).join('')}</ul>
+    </div>`).join('')}</div>`;
+  paintSprites();
+}
+function setOrderBusy(busy, label) {
+  order.busy = busy;
+  $('#order-submit').disabled = busy;
+  $('#order-text').disabled = busy;
+  $('#order-submit').textContent = busy ? label : '계획 만들기';
+}
+$('#order-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = $('#order-text').value.trim();
+  const err = $('#order-error');
+  err.textContent = '';
+  if (!text) return (err.textContent = '지시를 입력해 주세요');
+  if (order.busy) return;
+  setOrderBusy(true, '계획 만드는 중');
+  order.plan = null;
+  renderPlan();
+  try {
+    const r = await api('/api/order', { project: ui.project, instruction: text });
+    order.plan = r.plan;
+    order.instruction = r.instruction;
+    renderPlan();
+    $('#plan-confirm')?.focus();
+  } catch (x) {
+    err.textContent = x.message;
+  } finally {
+    setOrderBusy(false);
+  }
+});
+$('#order-plan').addEventListener('click', async (e) => {
+  if (e.target.closest('#plan-cancel')) {
+    order.plan = null;
+    renderPlan();
+    return $('#order-text').focus();
+  }
+  if (!e.target.closest('#plan-confirm') || order.busy) return;
+  const err = $('#order-error');
+  err.textContent = '';
+  setOrderBusy(true, '배정하는 중');
+  try {
+    const r = await api('/api/order/confirm', { project: ui.project, instruction: order.instruction, plan: order.plan });
+    order.plan = null;
+    renderPlan();
+    $('#order-text').value = '';
+    toast(`작업 ${r.tasks.length}개를 배정했습니다`);
+    load();
+  } catch (x) {
+    err.textContent = x.message;
+  } finally {
+    setOrderBusy(false);
+  }
+});
 for (const b of document.querySelectorAll('.seg-btn')) b.addEventListener('click', () => setView(b.dataset.view));
 
 $('#theme-toggle').addEventListener('click', () => {
@@ -692,15 +846,24 @@ $('#project-select').addEventListener('change', (e) => {
   ui.project = e.target.value;
   store('squad.project', ui.project);
   ui.seenMsgs = null;
-  ui.selected = null;
-  closeDrawer();
+  closeModal();
   connect();
   load();
 });
 
 $('#cards').addEventListener('click', (e) => {
-  const c = e.target.closest('[data-member]');
-  if (c) openDrawer(c.dataset.member);
+  const t = e.target.closest('[data-tech]');
+  if (t) {
+    const id = t.dataset.tech;
+    if (ui.openTech.has(id)) ui.openTech.delete(id);
+    else ui.openTech.add(id);
+    renderCards();
+    paintSprites();
+    document.querySelector(`[data-tech="${CSS.escape(id)}"]`)?.focus();
+    return;
+  }
+  const o = e.target.closest('[data-open]');
+  if (o) openModal(o.dataset.open);
 });
 $('#rows').addEventListener('toggle', (e) => {
   const id = e.target.dataset?.member;
@@ -710,15 +873,11 @@ $('#rows').addEventListener('toggle', (e) => {
 }, true);
 $('#rows').addEventListener('click', (e) => {
   const b = e.target.closest('[data-open]');
-  if (b) openDrawer(b.dataset.open);
+  if (b) openModal(b.dataset.open);
 });
-$('#filter-status').addEventListener('change', renderRows);
-$('#filter-member').addEventListener('change', renderRows);
-$('#drawer-close').addEventListener('click', closeDrawer);
-$('#scrim').addEventListener('click', closeDrawer);
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && ui.selected) closeDrawer();
-});
+const rerows = () => (renderRows(), paintSprites());
+$('#filter-status').addEventListener('change', rerows);
+$('#filter-member').addEventListener('change', rerows);
 
 $('#kanban').addEventListener('change', async (e) => {
   const sel = e.target.closest('select[data-field]');
@@ -772,11 +931,21 @@ setInterval(() => {
   if (ui.data && !document.hidden) {
     renderCards();
     if (ui.view === 'monitor') renderRows();
+    paintSprites();
   }
 }, 10000);
 
+// 캐릭터 움직임: 0.5초마다 프레임을 바꾼다. 움직임 줄이기면 멈춘다.
+setInterval(() => {
+  if (reduceMotion.matches || document.hidden) return;
+  ui.frame ^= 1;
+  paintSprites();
+  if (netVisible()) net.kick();
+}, 500);
+
 // ── 시작 ──
 (async () => {
+  setTab();
   setView(store('squad.view') === 'monitor' ? 'monitor' : 'network');
   try {
     const { projects } = await api('/api/projects');

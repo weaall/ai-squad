@@ -3,7 +3,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
@@ -13,10 +12,10 @@ import {
 import { setSection } from '../lib/md.mjs';
 import { STATUS_LABEL, buildState, describeEvent } from '../lib/state.mjs';
 import { validateMessage, validateTask } from '../lib/validate.mjs';
-import { buildOrderPrompt, buildRunPrompt, parsePlan, readStreamLine } from '../lib/claude.mjs';
+import { buildRunPrompt, readStreamLine } from '../lib/claude.mjs';
+import { planOrder, saveOrder, spawnClaude } from '../lib/runner.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const isWin = process.platform === 'win32';
 const now = () => new Date().toISOString();
 
 const HELP = `AI Squad CLI
@@ -86,25 +85,6 @@ function table(rows) {
   return rows.map((r) => r.map((c, i) => pad(c, ws[i])).join('  ').trimEnd()).join('\n');
 }
 
-// ── claude 실행 ──
-// 기본은 claude 를 바로 실행한다. headroom(토큰 압축 프록시)은 --headroom 이나 MEMBER.md 의 headroom: true 일 때만 감싼다.
-function launcher(useHeadroom) {
-  if (!useHeadroom) return { cmd: 'claude', pre: [] };
-  const found = spawnSync(isWin ? 'where' : 'which', ['headroom'], { stdio: 'ignore' }).status === 0;
-  if (found) return { cmd: 'headroom', pre: ['wrap', 'claude', '--'] };
-  console.warn('경고: headroom 이 켜져 있지만 설치돼 있지 않아 claude 를 바로 실행합니다');
-  return { cmd: 'claude', pre: [] };
-}
-
-// Windows 에서 claude 는 .cmd 라 셸을 거쳐야 한다 → 인자를 직접 따옴표로 감싼다. 프롬프트는 stdin 으로 보내 명령줄 길이 제한을 피한다.
-const quote = (a) => (isWin ? `"${String(a).replace(/"/g, '\\"')}"` : `'${String(a).replace(/'/g, `'\\''`)}'`);
-function spawnClaude(args, prompt, cwd, useHeadroom = false) {
-  const { cmd, pre } = launcher(useHeadroom);
-  const child = spawn(cmd, [...pre, ...args].map(quote), { cwd, shell: true, stdio: ['pipe', 'pipe', 'inherit'] });
-  child.stdin.end(prompt);
-  return child;
-}
-
 // ── 명령 ──
 const commands = {
   help() {
@@ -157,31 +137,18 @@ const commands = {
   async order([projectId, instruction], o) {
     if (!instruction) fail('사용법: order <project> "<지시>" [--dry]');
     const { paths, members } = ctx(projectId);
-    const tasks = readJsonl(paths.tasks);
-    for (const m of members) m.pending = tasks.filter((t) => t.member === m.id && t.status !== 'done').length;
-    const prompt = buildOrderPrompt({
-      orderMd: fs.readFileSync(path.join(ROOT, 'ORDER.md'), 'utf8'),
-      squadMd: fs.readFileSync(path.join(paths.squad, 'SQUAD.md'), 'utf8'),
-      members,
-      instruction,
-    });
-    const child = spawnClaude(['-p', '--output-format', 'json'], prompt, paths.path, Boolean(o.headroom));
-    let out = '';
-    child.stdout.on('data', (d) => (out += d));
-    const code = await new Promise((r) => child.on('close', r));
-    if (code !== 0) fail(`claude 가 ${code} 로 끝났습니다`);
     let plan;
     try {
-      plan = parsePlan(out, members.filter((m) => m.id !== 'order').map((m) => m.id));
+      plan = await planOrder({ root: ROOT, paths, members, instruction, headroom: Boolean(o.headroom) });
     } catch (e) {
       fail(e.message);
     }
     for (const p of plan) console.log(`- ${p.member}: ${p.title}${p.why ? `  (${p.why})` : ''}`);
     if (o.dry) return console.log('(--dry: 저장하지 않음)');
-    addMessage(paths, members, { from: 'human', to: 'order', kind: 'order', text: instruction.slice(0, 2000) });
-    for (const p of plan) {
-      const t = addTask(paths, members, p, 'order');
-      addMessage(paths, members, { from: 'order', to: p.member, kind: 'order', taskId: t.id, text: [p.title, p.why].filter(Boolean).join(' — ') });
+    try {
+      saveOrder({ paths, members, instruction, plan });
+    } catch (e) {
+      fail(e.message);
     }
     console.log(`작업 ${plan.length}개를 배정했습니다`);
   },
