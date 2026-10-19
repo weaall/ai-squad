@@ -7,7 +7,9 @@
   <title>AI Squad 보드</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
   <link rel="stylesheet" href="/style.css">
-  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="/brand/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="icon" href="/brand/favicon-64.png" sizes="64x64" type="image/png">
+  <link rel="apple-touch-icon" href="/brand/favicon-180.png">
   <script>
     // 저장된 테마를 먼저 적용해 깜빡임을 막는다 (기본은 어두운 테마)
     try { const t = localStorage.getItem('squad.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}
@@ -16,13 +18,9 @@
 <body>
   <header class="top">
     <div class="brand">
-      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-        <circle cx="16" cy="16" r="5" fill="currentColor"/>
-        <circle cx="5" cy="9" r="2.6" fill="currentColor" opacity=".7"/><circle cx="27" cy="9" r="2.6" fill="currentColor" opacity=".7"/>
-        <circle cx="5" cy="23" r="2.6" fill="currentColor" opacity=".7"/><circle cx="27" cy="23" r="2.6" fill="currentColor" opacity=".7"/>
-        <path d="M7 10l6 4M25 10l-6 4M7 22l6-4M25 22l-6-4" stroke="currentColor" stroke-width="1.4" opacity=".55"/>
-      </svg>
-      <span class="brand-name">AI Squad</span>
+      <!-- 어두운 테마: CI 로고(SQUAD 흰 글자). 밝은 테마: 심볼 + 진한 글자 -->
+      <img class="brand-logo" src="/brand/logo.png" alt="AI Squad" width="105" height="34">
+      <span class="brand-alt"><img src="/brand/symbol.png" alt="" width="29" height="26"><span class="brand-name"><b>AI</b> SQUAD</span></span>
     </div>
     <label class="field-inline">
       <span class="sr-only">프로젝트</span>

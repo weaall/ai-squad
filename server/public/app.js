@@ -497,8 +497,10 @@ const net = (() => {
   let raf = 0;
   let bg = null;
   const font = getComputedStyle(document.body).fontFamily;
-  const KC = { order: '#9fb0ff', handoff: '#f2b64c', question: '#5cc8f2', answer: '#45d6a6', report: '#b78cff', note: '#aab4cc' };
-  const SC = { working: '#45d6a6', idle: '#5f6b8f', blocked: '#ff7b7b' };
+  // 지시는 CI 시안, 실행 중은 CI 시안 고리 — style.css 의 --k-*·--working 과 맞춘다
+  const KC = { order: '#1fd5e4', handoff: '#f2b64c', question: '#f28fd0', answer: '#9cdfa8', report: '#b78cff', note: '#aab4cc' };
+  const SC = { working: '#1fd5e4', idle: '#5f6b8f', blocked: '#ff7b7b' };
+  const RING = ['#3c84d8', '#1fd5e4', '#6ce4d8', '#9cdfa8']; // 메인 오더 고리 = CI 심볼 고리
 
   function layout() {
     const ms = ui.data?.members || [];
@@ -627,10 +629,10 @@ const net = (() => {
       }
       const width = 1 + Math.min(l.times.length, 10) * 0.25;
       ctx.save();
-      ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+      ctx.strokeStyle = `rgba(140,226,236,${alpha})`;
       ctx.lineWidth = width;
       if (!still && !light) {
-        ctx.shadowColor = 'rgba(200,215,255,0.9)';
+        ctx.shadowColor = 'rgba(31,213,228,0.9)';
         ctx.shadowBlur = 10 * alpha;
       }
       ctx.beginPath();
@@ -693,7 +695,7 @@ const net = (() => {
         ctx.restore();
       }
       ctx.lineWidth = id === hover ? 3.5 : 2.5;
-      ctx.strokeStyle = id === hover ? '#ffffff' : SC[st];
+      ctx.strokeStyle = id === hover ? '#ffffff' : id === 'order' && st !== 'blocked' ? orderRing(n) : SC[st];
       ctx.beginPath();
       ctx.arc(n.x, n.y, n.r + 3, 0, Math.PI * 2);
       ctx.stroke();
@@ -713,6 +715,12 @@ const net = (() => {
         ctx.fillText(clip(m.current || memberStatusName(m), 18), n.x, n.y + n.r + 32);
       }
     }
+  }
+  function orderRing(n) {
+    const g = ctx.createConicGradient(-Math.PI / 2, n.x, n.y);
+    RING.forEach((c, i) => g.addColorStop(i / RING.length, c));
+    g.addColorStop(1, RING[0]);
+    return g;
   }
   const clip = (s, n) => ([...s].length > n ? [...s].slice(0, n - 1).join('') + '…' : s);
   function hexA(hex, a) {
