@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { readCookie, startBoard } from './index.mjs';
-import { appendJsonl } from '../lib/store.mjs';
+import { appendJsonl, updateTask } from '../lib/store.mjs';
 import { requestApproval } from '../lib/approvals.mjs';
 
 test('쿠키 읽기', () => {
@@ -106,6 +106,15 @@ test('보드 서버: 토큰·상태·POST·승인·켜기끄기·SSE·보안', a
     assert.equal((await post('/api/approvals/decide', { project: 'p', id: req.id, decision: 'approved' })).status, 409);
     const st3 = await (await get('/api/state?project=p')).json();
     assert.equal(st3.counts.approvals, 0);
+    // 작업에 딸린 승인이면 그 작업을 [승인됨] 절과 함께 todo 로 되돌리고 대기열을 깨운다(시험 보드는 queue 없음 → 'off')
+    const site = after.tasks.find((x) => x.member === 'site');
+    updateTask(path.join(proj, '.squad', 'tasks.jsonl'), site.id, { status: 'blocked' });
+    const req2 = requestApproval({ approvals: path.join(proj, '.squad', 'approvals.jsonl') }, { from: 'site', action: 'delete', text: 'old.md 삭제', taskId: site.id, commands: ['git rm old.md'] });
+    const dec2 = await (await post('/api/approvals/decide', { project: 'p', id: req2.id, decision: 'approved' })).json();
+    assert.equal(dec2.queue, 'off');
+    const t4 = (await (await get('/api/state?project=p')).json()).tasks.find((x) => x.id === site.id);
+    assert.equal(t4.status, 'todo');
+    assert.match(t4.detail, /\[승인됨\] 삭제 — old\.md 삭제 · 명령: git rm old\.md/);
     assert.ok(st3.messages.some((m) => m.from === 'human' && m.to === 'site' && m.kind === 'answer' && /거절.*테스트 먼저/.test(m.text)));
 
     // 켜기·끄기: MEMBER.md frontmatter 의 그 값만 바뀐다

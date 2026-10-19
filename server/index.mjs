@@ -20,7 +20,7 @@ import { savingsCache } from '../lib/headroom.mjs';
 import { CAPTURE_RE } from '../lib/capture.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { LOGIN_COMMAND, runnerStatuses } from '../lib/runners/index.mjs';
-import { decideApproval, decisionText, loadApprovals } from '../lib/approvals.mjs';
+import { decideApproval, decisionText, loadApprovals, resumeAfterDecision } from '../lib/approvals.mjs';
 import { BLOCKED_ACTS, blockedAction } from '../lib/blocked.mjs';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
@@ -288,7 +288,7 @@ export function startBoard({
           const d = decideApproval(p, body.id, body.decision, 'human', body.note ?? '');
           const msg = validateMessage({ from: 'human', to: d.from, kind: 'answer', taskId: d.taskId, text: decisionText(d) }, ids);
           if (!msg.error) appendJsonl(p.messages, { id: newId('M'), at, ...msg });
-          return send(res, 200, d);
+          return send(res, 200, resumeAfterDecision(p, d) ? { ...d, queue: startQueue(pid, p) } : d);
         } catch (e) {
           return send(res, /이미/.test(e.message) ? 409 : 400, { error: e.message });
         }

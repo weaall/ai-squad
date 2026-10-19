@@ -1,4 +1,7 @@
 ## 인계 메모
+- 승인 결정 뒤 이어 실행: lib/approvals.mjs resumePatch(순수)·resumeAfterDecision — taskId 작업을 todo + detail '[승인됨] 행위 — 내용 · 명령: ..'(거절은 '[거절됨] .. 사유 — 대안') + task.allow, 멤버 log idle 이벤트. /api/approvals/decide 가 부르고 바뀌면 응답에 queue(startQueue). budget·doing·cancelled 는 안 건드림.
+- task.allow 는 runMember 가 시작 때 읽고 지움 → claude exec({allow}) → allowRules 가 safeTools 를 거치지 않고 정확한 `Bash(<명령>)` 만 더함(* ( ) , 줄바꿈 섞이면 뺌). 실행 규칙에 [승인됨] 절 한 줄.
+- CLI approve yes|no 에서 resumeAfterDecision 호출은 runner 인계 T-mvex229s-ecf0(bin 은 runner 소유).
 - SSE hello 이벤트 data 에 version(env SQUAD_BOARD_VERSION, 없으면 null) — 화면이 재접속 때 비교해 새로고침(ui 인계 T-mvewox3z-bf45 처리, index.test.mjs 가 hello 모양 확인). env 는 bin/board-watch.mjs 가 runningHead 로 넣음. 실행 규칙에 '보드 서버 직접 띄우지 않기' 한 줄.
 - GET /api/usage/headroom: lib/headroom.mjs savingsCache 가 5분마다 `headroom savings --json --days 7` → {at, data(날것 JSON)}, 없으면 404. startBoard savings 옵션(가짜 planner 면 null).
 - weekUsage days[] 에 total(날것 토큰)·costUsd·runners{r:{total,costUsd}} 추가 — 사용량 탭은 events 대신 이것을 쓰면 정확.
