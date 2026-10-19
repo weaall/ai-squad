@@ -13,6 +13,7 @@ import { buildState } from '../lib/state.mjs';
 import { validateMessage, validateOrder, validatePlan, validateTask, validateTaskPatch } from '../lib/validate.mjs';
 import { budgetGate, planOrder, runQueue, saveOrder } from '../lib/runner.mjs';
 import { planNeedsConfirm } from '../lib/confirm.mjs';
+import { fastPlan } from '../lib/runners/fastpath.mjs';
 import { addInbox, loadInbox } from '../lib/inbox.mjs';
 import { buildReport, dateKey, isDateKey } from '../lib/report.mjs';
 import { limitsView, loadLimits } from '../lib/limits.mjs';
@@ -258,15 +259,18 @@ export function startBoard({
         if (!g.ok) return send(res, 409, { error: `예산 경고: ${g.check.reason}. 확인 패널에서 예산 승인을 한 뒤 다시 보내 주세요`, budget: 'warn', approvalId: g.approval.id });
         ordering = true;
         try {
-          const { plan, usage } = await planner({ root, paths: p, members: loadMembers(p), instruction: v.instruction, stderr: 'pipe' });
-          appendJsonl(p.events, { at, project: pid, member: 'order', type: 'plan', text: `계획 ${plan.length}개`, ...(usage ? { usage } : {}) });
+          // 멤버 일로 분명하면 계획 LLM 을 부르지 않는다(빠른 길)
+          const fast = fastPlan(v.instruction, loadMembers(p));
+          const orderId = newId('M');
+          const { plan, usage } = fast ? { plan: [fast], usage: null } : await planner({ root, paths: p, members: loadMembers(p), instruction: v.instruction, stderr: 'pipe' });
+          appendJsonl(p.events, { at, project: pid, member: 'order', type: 'plan', text: fast ? `빠른 길 → ${fast.member}` : `계획 ${plan.length}개`, orderId, ...(usage ? { usage } : {}) });
           if (!plan.length) return send(res, 502, { error: '메인 오더가 배정할 작업을 내놓지 않았습니다. 지시를 더 구체적으로 써 주세요' });
           // 사람 확인이 필요 없으면 바로 배정하고 대기열을 백그라운드로 돌린다. 필요하면 확인 대기(확인 패널 → /api/order/confirm)
           const members = loadMembers(p);
           const c = planNeedsConfirm({ plan, members, config: loadConfig(root) });
-          const out = { instruction: v.instruction, plan, usage: usage || null, ...c };
+          const out = { instruction: v.instruction, plan, usage: usage || null, orderId, ...c };
           if (c.needsConfirm) return send(res, 200, out);
-          const tasks = saveOrder({ paths: p, members, instruction: v.instruction, plan });
+          const tasks = saveOrder({ paths: p, members, instruction: v.instruction, plan, orderId });
           return send(res, 200, { ...out, tasks, queue: startQueue(pid, p) });
         } catch (e) {
           return send(res, 502, { error: `계획을 만들지 못했습니다: ${e.message}` });
@@ -279,7 +283,7 @@ export function startBoard({
         if (o.error) return send(res, 400, o);
         const v = validatePlan(body.plan, ids);
         if (v.error) return send(res, 400, v);
-        const tasks = saveOrder({ paths: p, members: loadMembers(p), instruction: o.instruction, plan: v.plan });
+        const tasks = saveOrder({ paths: p, members: loadMembers(p), instruction: o.instruction, plan: v.plan, ...(/^M-[\w-]{1,40}$/.test(body.orderId) ? { orderId: body.orderId } : {}) });
         return send(res, 201, { tasks, queue: startQueue(pid, p) });
       }
       if (url.pathname === '/api/approvals/decide') {
