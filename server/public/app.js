@@ -8,7 +8,6 @@ const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const ACTION = { push: 'push', deploy: '배포', migrate: 'DB 마이그레이션', send: '외부 발송', delete: '삭제', budget: '예산 확인' };
 const LITE_MEMBERS = 12; // 이보다 많으면 저절로 가벼운 효과
 const MAX_PARTICLES = 30;
-const MAX_RIPPLES = 12;
 
 const ui = {
   projects: [],
@@ -22,7 +21,6 @@ const ui = {
   runners: [],
   frame: 0,
   seenMsgs: null,
-  seenEvents: null,
   newMsgIds: new Set(),
 };
 
@@ -133,9 +131,7 @@ async function load() {
       const data = await api(`/api/state?project=${encodeURIComponent(ui.project)}`);
       const first = ui.seenMsgs === null;
       const fresh = first ? [] : data.messages.filter((m) => !ui.seenMsgs.has(m.id));
-      const freshEvents = first ? [] : data.events.filter((e) => !ui.seenEvents.has(evKey(e)));
       ui.seenMsgs = new Set(data.messages.map((m) => m.id));
-      ui.seenEvents = new Set(data.events.map(evKey));
       ui.newMsgIds = new Set(fresh.map((m) => m.id));
       ui.data = data;
       render();
@@ -144,7 +140,6 @@ async function load() {
       try {
         net.sync(data, first);
         for (const m of fresh) net.message(m);
-        for (const e of freshEvents) net.event(e);
       } catch (x) {
         console.warn('연결 그림을 그리지 못했습니다', x);
       }
@@ -156,7 +151,6 @@ async function load() {
   })();
   return loading;
 }
-const evKey = (e) => `${e.at}|${e.member}|${e.type}|${e.tool || ''}|${e.path || ''}`;
 
 let source = null;
 function connect() {
@@ -496,9 +490,9 @@ const net = (() => {
   const ctx = canvas.getContext('2d');
   let W = 0, H = 0, dpr = 1;
   let nodes = new Map(); // id → {x, y, r, m}
-  const links = new Map(); // "a|b" → {a, b, at, count, kind}
+  const links = new Map(); // "a|b" → {a, b, at, times}  times: 최근 1시간 메시지 시각
   let particles = [];
-  let ripples = [];
+  const FLY = 600, FADE = 2500, HOUR = 3600000; // 빛이 가는 시간, 그 뒤 선이 옅어지는 시간
   let hover = null;
   let raf = 0;
   let bg = null;
@@ -567,8 +561,8 @@ const net = (() => {
   function sync(data, first) {
     layout();
     if (first) {
-      // 처음 열 때: 최근 2분 안의 대화 선만 켜 둔다 (흐름 애니메이션은 새 메시지부터)
-      const since = Date.now() - 120000;
+      // 처음 열 때: 최근 1시간 대화로 선 굵기만 채운다 (빛은 새 메시지부터)
+      const since = Date.now() - HOUR;
       for (const m of data.messages) {
         const t = Date.parse(m.at);
         if (t > since) touch(m, t);
@@ -580,30 +574,17 @@ const net = (() => {
   function touch(m, t = Date.now()) {
     if (!nodes.has(m.from) || !nodes.has(m.to) || m.from === m.to) return;
     const k = key(m.from, m.to);
-    const l = links.get(k) || { a: m.from, b: m.to, count: 0 };
-    l.at = t;
-    l.count++;
-    l.kind = m.kind;
+    const l = links.get(k) || { a: m.from, b: m.to, times: [] };
+    l.at = Math.max(l.at || 0, t);
+    l.times.push(t);
     links.set(k, l);
   }
-  // 빛 알갱이는 동시에 MAX_PARTICLES 개까지(넘치면 오래된 것부터 버린다). 가벼운 효과면 메시지마다 1개.
+  // 메시지 하나에 빛 하나: 보낸 쪽 → 받는 쪽. 동시에 MAX_PARTICLES 개까지(넘치면 오래된 것부터 버린다).
   function message(m) {
     touch(m);
-    if (reduceMotion.matches || !nodes.has(m.from) || !nodes.has(m.to)) return kick();
-    const now = performance.now();
-    const n = lite() ? 1 : 4;
-    for (let i = 0; i < n; i++) particles.push({ from: m.from, to: m.to, t0: now + i * 90, dur: 900, kind: m.kind, lead: i === 0 });
+    if (reduceMotion.matches || !nodes.has(m.from) || !nodes.has(m.to) || m.from === m.to) return kick();
+    particles.push({ from: m.from, to: m.to, t0: performance.now(), kind: m.kind });
     if (particles.length > MAX_PARTICLES) particles.splice(0, particles.length - MAX_PARTICLES);
-    kick();
-  }
-  function ripple(r) {
-    if (lite()) return;
-    ripples.push(r);
-    if (ripples.length > MAX_RIPPLES) ripples.splice(0, ripples.length - MAX_RIPPLES);
-  }
-  function event(e) {
-    if (reduceMotion.matches || !nodes.has(e.member)) return;
-    if (e.type === 'tool' || e.type === 'start' || e.type === 'log') ripple({ id: e.member, t0: performance.now(), dur: 600, color: e.type === 'tool' ? '#ffffff' : SC.working });
     kick();
   }
 
@@ -615,11 +596,11 @@ const net = (() => {
     const still = reduceMotion.matches;
     const light = lite();
 
-    // 기본 바큇살
+    // 배경 고정선: 메인 오더 ↔ 멤버만, 아주 옅게
     const order = nodes.get('order');
     if (order) {
       ctx.lineWidth = 1;
-      ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+      ctx.strokeStyle = 'rgba(255,255,255,0.035)';
       for (const [id, n] of nodes) {
         if (id === 'order' || id === 'human') continue;
         ctx.beginPath();
@@ -629,22 +610,22 @@ const net = (() => {
       }
     }
 
-    // 대화한 선: 밝게 남았다가 서서히 옅어진다. 움직임 줄이기면 굵기로만 표시
+    // 오간 선: 빛이 가는 동안 밝고, 그 뒤 FADE 동안 옅어진다. 굵기는 그 쌍의 최근 1시간 메시지 수.
+    // 움직임 줄이기면 최근 10분 선을 고정으로 둔다.
     for (const l of links.values()) {
+      while (l.times.length && wall - l.times[0] > HOUR) l.times.shift();
       const q = curve(l.a, l.b);
       if (!q) continue;
       const age = wall - l.at;
-      let alpha, width;
+      let alpha;
       if (still) {
         if (age > 600000) continue;
         alpha = 0.5;
-        width = 1 + Math.min(l.count, 6) * 0.7;
       } else {
-        const f = Math.exp(-age / 14000);
-        if (f < 0.02) continue;
-        alpha = 0.1 + 0.75 * f;
-        width = 1 + 1.8 * f;
+        if (age > FLY + FADE) continue;
+        alpha = 0.75 * (age < FLY ? 1 : 1 - (age - FLY) / FADE);
       }
+      const width = 1 + Math.min(l.times.length, 10) * 0.25;
       ctx.save();
       ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
       ctx.lineWidth = width;
@@ -660,49 +641,24 @@ const net = (() => {
     }
 
     // 빛 알갱이
-    particles = particles.filter((p) => now - p.t0 < p.dur + 40);
+    particles = particles.filter((p) => now - p.t0 < FLY);
     for (const p of particles) {
-      const t = (now - p.t0) / p.dur;
-      if (t < 0 || t > 1) {
-        if (t > 1 && p.lead && !p.done) {
-          p.done = true;
-          ripple({ id: p.to, t0: now, dur: 600, color: KC[p.kind] || '#fff' });
-        }
-        continue;
-      }
+      const t = (now - p.t0) / FLY;
       const q = curve(p.from, p.to);
       if (!q) continue;
-      const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-      for (let j = light ? 0 : 4; j >= 0; j--) {
-        const tt = Math.max(0, e - j * 0.022);
-        const pt = at(q, tt);
-        const a = (1 - j / 7) * (p.lead ? 1 : 0.6);
-        ctx.beginPath();
-        ctx.fillStyle = j === 0 ? `rgba(255,255,255,${a})` : `rgba(210,222,255,${a * 0.5})`;
-        ctx.arc(pt.x, pt.y, j === 0 ? (p.lead ? 3.2 : 2.2) : 2 - j * 0.2, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      const head = at(q, e);
-      const g = ctx.createRadialGradient(head.x, head.y, 0, head.x, head.y, p.lead ? 16 : 10);
-      g.addColorStop(0, hexA(KC[p.kind] || '#ffffff', 0.55));
-      g.addColorStop(1, hexA(KC[p.kind] || '#ffffff', 0));
+      const head = at(q, t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+      const c = KC[p.kind] || '#ffffff';
+      const g = ctx.createRadialGradient(head.x, head.y, 0, head.x, head.y, 12);
+      g.addColorStop(0, hexA(c, 0.6));
+      g.addColorStop(1, hexA(c, 0));
       ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.arc(head.x, head.y, p.lead ? 16 : 10, 0, Math.PI * 2);
+      ctx.arc(head.x, head.y, 12, 0, Math.PI * 2);
       ctx.fill();
-    }
-
-    // 파동
-    ripples = ripples.filter((r) => now - r.t0 < r.dur);
-    for (const r of ripples) {
-      const n = nodes.get(r.id);
-      if (!n) continue;
-      const t = (now - r.t0) / r.dur;
+      ctx.fillStyle = '#fff';
       ctx.beginPath();
-      ctx.strokeStyle = hexA(r.color, 0.7 * (1 - t));
-      ctx.lineWidth = 2 * (1 - t) + 0.5;
-      ctx.arc(n.x, n.y, n.r + 4 + t * 22, 0, Math.PI * 2);
-      ctx.stroke();
+      ctx.arc(head.x, head.y, 3, 0, Math.PI * 2);
+      ctx.fill();
     }
 
     // 노드
@@ -765,14 +721,12 @@ const net = (() => {
     return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
   }
 
-  // 움직일 것이 있을 때만 프레임을 돈다
-  // 움직일 것이 없으면 프레임을 멈춘다. 가벼운 효과면 빛 알갱이가 날 때만 돈다.
+  // 움직일 것이 없으면 프레임을 멈춘다. 가벼운 효과면 빛과 옅어지는 선이 있을 때만 돈다.
   function busy() {
     if (reduceMotion.matches) return false;
-    if (particles.length || ripples.length) return true;
-    if (lite()) return false;
     const wall = Date.now();
-    return [...nodes.values()].some((n) => n.m.status === 'working') || [...links.values()].some((l) => wall - l.at < 20000);
+    if (particles.length || [...links.values()].some((l) => wall - l.at < FLY + FADE)) return true;
+    return !lite() && [...nodes.values()].some((n) => n.m.status === 'working');
   }
   function loop(now) {
     raf = 0;

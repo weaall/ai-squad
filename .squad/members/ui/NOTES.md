@@ -1,5 +1,7 @@
 ## 인계 메모
 
+- T-mves6pec-d27c: 연결 보기는 메시지마다 from→to 빛 하나(FLY 600ms) 뒤 선이 FADE 2.5s 동안 옅어짐. 굵기는 쌍별 최근 1시간 메시지 수(links.times). 파동·꼬리 입자·net.event 제거, 배경선은 오더↔멤버 0.035.
+
 - T-mves5akf-2c54: 상단 '할 일 n · 잠김 m'(logic.js todoCounts, todo·waitingOn), 카드·행 '할 일 n'. 멤버 상태 이름은 data.statusLabels ?? STATUS_FALLBACK, 입력·승인 대기는 viewStatus(task input·approvals pending)로 가름, 색은 m.status 그대로.
 - STATUS_LABEL 변경·statusLabels 응답은 server 에 handoff(M-mvesck01-9dc7). lib/v04 run-queue 동시 실행 테스트는 ui 와 무관하게 실패 중.
 
