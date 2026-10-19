@@ -555,8 +555,10 @@ textarea.input { resize: vertical; line-height: 1.5; }
 /* ── v0.4: 한 줄 머리줄 · 연결 칩 · 토큰 막대 ── */
 .top { flex-wrap: nowrap; gap: 12px; padding: 9px 20px; white-space: nowrap; }
 .top > * { flex: none; }
-.top .stats { flex: 0 1 auto; min-width: 0; flex-wrap: nowrap; overflow: hidden; gap: 6px; }
-.top .stat { padding: 4px 10px; }
+/* 칩은 글자 단위로 끊지 않는다(body 의 overflow-wrap:anywhere 차단). 칸이 모자라면 들어가지 않는 칩은 둘째 줄로 넘겨 통째로 숨긴다 */
+.top .stats { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; align-content: flex-start; height: 30px; overflow: hidden; gap: 6px; }
+.top .stat { padding: 4px 10px; line-height: 20px; }
+.stat, .confirm-badge, .demo-badge, .tab { flex: none; white-space: nowrap; overflow-wrap: normal; }
 .tabs { margin-left: 4px; }
 .tab { padding: 6px 11px; }
 .top-right { gap: 8px; }
@@ -679,14 +681,15 @@ pre.cmd { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--su
   .shell { flex-direction: column; }
   .side, .side.is-wide { width: auto; border-left: 0; border-top: 1px solid var(--line-soft); order: -1; }
   .top { flex-wrap: wrap; white-space: normal; }
+  .top .stats { height: auto; }
   .kanban { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .fx-lite .side-card.is-fresh, .fx-lite .tcard.is-fresh { animation: none; box-shadow: 0 0 0 2px var(--warn); }
 @media (max-width: 640px) { .kanban { grid-template-columns: minmax(0, 1fr); } .cmd-form .select { width: 100%; } }
 .tcard-foot { flex-wrap: wrap; }
 .tcard-foot .select { min-width: 92px; }
-/* 확인 패널을 펼치면 본문이 좁아진다: 캔버스가 너무 작아지지 않게 카드 칸을 줄인다 */
+/* 확인 패널을 펼치면 본문이 좁아진다: 카드는 2열 고정, 카드 칸은 2열이 들어갈 폭(440px)을 지킨다 */
 @media (min-width: 961px) and (min-height: 561px) {
-  .has-side .net-layout { grid-template-columns: minmax(260px, 1fr) minmax(280px, 0.9fr); }
-  .has-side .cards { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  .has-side .net-layout { grid-template-columns: minmax(240px, 1fr) minmax(440px, 0.9fr); }
+  .has-side .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
