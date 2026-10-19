@@ -1,7 +1,14 @@
 // 보드 화면의 판단 함수(server/public/logic.js): 확인 패널 열기, 확인 순서, diff 렌더, 승인 가능 여부.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { budgetLevel, canApprove, confirmItems, looksLikeDiff, panelDecision, renderDiff } from './public/logic.js';
+import { budgetLevel, canApprove, confirmItems, looksLikeDiff, orderOutcome, panelDecision, renderDiff } from './public/logic.js';
+
+test('지시 결과: 자동 배정은 알림, needsConfirm 만 확인 패널(사유 포함)', () => {
+  assert.deepEqual(orderOutcome({ plan: [{}], tasks: [{}, {}], needsConfirm: false }), { kind: 'auto', count: 2 });
+  assert.deepEqual(orderOutcome({ plan: [{}], needsConfirm: true, reasons: ['위험 작업: server · 배포'] }), { kind: 'confirm', reasons: ['위험 작업: server · 배포'] });
+  // 서버가 reasons 를 안 주면(이전 서버) 오더가 단 reason 으로
+  assert.deepEqual(orderOutcome({ plan: [{ member: 'ui', title: 'a', needsConfirm: true, reason: '색이 모호' }, { member: 'ui', title: 'b' }] }), { kind: 'confirm', reasons: ['오더 판단: ui · 색이 모호'] });
+});
 
 test('확인 순서: 승인 → 예산 → 계획 → 로그인', () => {
   const items = confirmItems({

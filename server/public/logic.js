@@ -16,6 +16,18 @@ export function confirmItems({ approvals = [], plan = null, runners = [] }) {
 }
 
 /**
+ * /api/order 응답 → 자동 배정됐는지, 확인이 필요한지.
+ * 서버가 배정까지 끝냈으면(tasks 가 있고 needsConfirm 이 true 가 아님) 'auto', 아니면 'confirm' + 사유.
+ * 사유는 서버 reasons 우선, 없으면 오더가 계획 항목에 단 reason 으로 채운다.
+ * → { kind: 'auto', count } | { kind: 'confirm', reasons: [string] }
+ */
+export function orderOutcome(r = {}) {
+  if (Array.isArray(r.tasks) && r.needsConfirm !== true) return { kind: 'auto', count: r.tasks.length };
+  const own = (r.plan || []).filter((p) => p.needsConfirm).map((p) => `오더 판단: ${p.member} · ${p.reason || p.title}`);
+  return { kind: 'confirm', reasons: Array.isArray(r.reasons) && r.reasons.length ? r.reasons.map(String) : own };
+}
+
+/**
  * 확인 패널을 어떻게 할지 — 상태가 바뀔 때마다(첫 상태 포함) 부른다.
  * seen: 이미 본 key 들. 처음 받은 상태에서는 seen 이 비어 있어 모든 항목이 "새것"이다 → 닫혀 있어도 펼친다.
  * → { open, fresh: [새 key], seen: 다음 seen }

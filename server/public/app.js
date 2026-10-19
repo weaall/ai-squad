@@ -1,6 +1,6 @@
 // AI Squad 보드 화면. 프레임워크 없이 상태 하나를 받아 전부 다시 그린다.
 import { SIZE, character, drawCharacter } from './pixel.js';
-import { budgetLevel, canApprove, confirmItems, inputKey, inputPayload, looksLikeDiff, panelDecision, pendingInputs, renderDiff } from './logic.js';
+import { budgetLevel, canApprove, confirmItems, inputKey, inputPayload, looksLikeDiff, orderOutcome, panelDecision, pendingInputs, renderDiff } from './logic.js';
 const $ = (s) => document.querySelector(s);
 const STATUS = { working: '일하는 중', idle: '대기', blocked: '막힘' };
 const KIND = { order: '지시', handoff: '인계', question: '질문', answer: '답변', report: '완료 보고', note: '메모' };
@@ -1078,7 +1078,7 @@ function cardHtml(it) {
     const owners = [...new Set(order.plan.map((p) => p.member))];
     return `<li class="side-card t-plan${fresh}" data-key="${esc(it.key)}">
       <div class="sc-head">${avatar('order', 'sm')}<div class="sc-title"><b>메인 오더 계획 — 배정 확인</b><small>작업 ${order.plan.length}개 · 아직 저장하지 않았습니다</small></div></div>
-      <dl class="kv sc-kv"><dt>지시</dt><dd>${esc(order.instruction)}</dd><dt>영향 범위</dt><dd class="mono">${esc(owners.map((id) => `${id}: ${scopeOf(id)}`).join(' / '))}</dd></dl>
+      <dl class="kv sc-kv"><dt>지시</dt><dd>${esc(order.instruction)}</dd><dt>확인 이유</dt><dd>${order.reasons.length ? order.reasons.map(esc).join('<br>') : '적지 않음'}</dd><dt>영향 범위</dt><dd class="mono">${esc(owners.map((id) => `${id}: ${scopeOf(id)}`).join(' / '))}</dd></dl>
       <div class="sc-actions">${btn('plan-cancel', '취소') + btn('plan-confirm', '배정', 'btn-primary')}</div>
     </li>`;
   }
@@ -1325,7 +1325,7 @@ function setTab() {
 window.addEventListener('hashchange', setTab);
 
 // ── 메인 오더에게 지시: 계획 만들기 → 이대로 배정 (두 단계) ──
-const order = { plan: null, instruction: '', busy: false };
+const order = { plan: null, instruction: '', reasons: [], busy: false };
 function planGroups() {
   const groups = new Map();
   for (const p of order.plan) groups.set(p.member, [...(groups.get(p.member) || []), p]);
@@ -1372,8 +1372,16 @@ async function submitOrder(text) {
   renderPlan();
   try {
     const r = await api('/api/order', { project: ui.project, instruction: text });
+    const o = orderOutcome(r);
+    // 서버가 바로 배정했으면 확인 패널에 올리지 않고 알림만
+    if (o.kind === 'auto') {
+      clearOrderText();
+      toast(`자동 배정: 작업 ${o.count}개 — 바로 시작합니다`);
+      return load();
+    }
     order.plan = r.plan;
     order.instruction = r.instruction;
+    order.reasons = o.reasons;
     renderPlan();
   } catch (x) {
     err.textContent = x.message;
