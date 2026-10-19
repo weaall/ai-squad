@@ -2,6 +2,8 @@
 // 시연용: 몇 초 간격으로 메시지·작업·이벤트를 만들어 보드가 움직이는 모습을 보여 준다.
 // 실제 기록과 섞이지 않게 data/demo/ 아래 별도 파일에만 쓴다. 보드는 `squad board --demo` 로 이 파일을 읽는다.
 // v0.3: 토큰 사용량(end 이벤트의 usage), 승인 요청(approvals.jsonl), 답 없는 인계, 멈춘 멤버도 보여 준다.
+// v0.4: 예산 경고(오늘 사용량을 상한의 80% 넘게 + 예산 승인 카드), 의존 작업(선행·잠금), 검수 칸, 일일 보고, 데스크톱 inbox,
+//       상세(SQL·파일·명령·되돌리기)가 붙은 DB 마이그레이션 승인 요청. 모든 상세에 "시연" 표시를 남긴다.
 //
 //   node scripts/demo-events.mjs [project] [--interval 2500] [--count N] [--reset]
 //     --reset  시연 파일을 지우고 끝낸다
@@ -11,6 +13,10 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { appendJsonl, loadMembers, newId, projectPaths, readJsonl, updateTask } from '../lib/store.mjs';
 import { loadApprovals, requestApproval } from '../lib/approvals.mjs';
+import { loadConfig } from '../lib/config.mjs';
+import { finishReview } from '../lib/runner.mjs';
+import { buildReport, dateKey } from '../lib/report.mjs';
+import { addInbox, doneInbox, takeInbox } from '../lib/inbox.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { values: o, positionals } = parseArgs({
@@ -41,8 +47,8 @@ const iso = (ms = 0) => new Date(Date.now() + ms).toISOString();
 const msg = (from, to, kind, text, taskId, ago = 0) =>
   appendJsonl(paths.messages, { id: newId('M'), at: iso(-ago), from, to, kind, text, ...(taskId ? { taskId } : {}), demo: true });
 const ev = (member, e, ago = 0) => appendJsonl(paths.events, { at: iso(-ago), project, member, ...e, demo: true });
-const task = (member, title, detail, status = 'todo', ago = 0) =>
-  appendJsonl(paths.tasks, { id: newId('T'), title, detail, member, status, createdBy: 'order', createdAt: iso(-ago), updatedAt: iso(-ago), summary: '', demo: true });
+const task = (member, title, detail, status = 'todo', ago = 0, extra = {}) =>
+  appendJsonl(paths.tasks, { id: newId('T'), title, detail, member, status, createdBy: 'order', createdAt: iso(-ago), updatedAt: iso(-ago), summary: '', demo: true, ...extra });
 const setTask = (id, patch) => updateTask(paths.tasks, id, patch);
 const tool = (member, name, p) => ev(member, { type: 'tool', tool: name, path: p });
 // 시연용 사용량 — 실제 값이 아니다
@@ -53,6 +59,7 @@ const finish = (t, summary, u) => {
   end(t.member, t.id, u);
 };
 
+let ctx = {};
 // 처음 열었을 때 비어 보이지 않게 지난 기록 몇 개를 깔아 둔다
 if (!readJsonl(paths.messages).length) {
   const m = 60000;
@@ -73,11 +80,36 @@ if (!readJsonl(paths.messages).length) {
   // 답 없는 인계: 45분 전에 넘겼는데 받은 쪽이 아직 답하지 않았다
   msg('site', 'biz-docs', 'handoff', '검진기관 안내 문구가 PoC 문서와 맞는지 봐 주세요. 제 owns 밖입니다.', '', 45 * m);
   ev('backend', { type: 'log', status: 'idle', text: '답변 대기 끝, 다음 순서 대기' }, 26 * m);
+
+  // v0.4 의존: 부서 범주 API(t2)가 끝나야 대시보드 필터를 시작할 수 있다 → 칸반에 "선행"·잠금
+  task('org-dashboard', '대시보드에 부서 범주 필터 추가', '백엔드 집계 API 가 끝난 뒤', 'todo', 25 * m, { dependsOn: [t2.id], step: 2 });
+  // v0.4 검수: 사이트 작업이 끝나 검수 멤버(사업 문서)를 기다린다
+  ctx.review = task('site', '검진기관 안내 페이지 문구 보강', 'app/service/** 만', 'review', 18 * m, {
+    reviewer: 'biz-docs', summary: '검진기관 안내 3문단 보강, 금지어 점검 통과',
+    diffStat: [{ path: 'qugo_fe_web/app/service/checkup/page.tsx', add: 42, del: 9 }, { path: 'qugo_fe_web/lib/guides/checkup.ts', add: 18, del: 2 }],
+    usage: usage(16400, 2100, 30000),
+  });
+  msg('site', 'biz-docs', 'handoff', '검수 부탁드립니다: 검진기관 안내 페이지 문구 보강', ctx.review.id, 17 * m);
+  // v0.4 예산: 오늘 사용량을 하루 상한의 82% 쯤으로(시연 값) → 상단 막대가 노랗게, 오더의 예산 확인 카드
+  const daily = loadConfig(ROOT).budget.daily;
+  if (daily > 0) {
+    const used = readJsonl(paths.events).filter((e) => e.usage && dateKey(e.at) === dateKey(Date.now())).reduce((n, e) => n + e.usage.input + e.usage.output + e.usage.cacheRead + e.usage.cacheWrite, 0);
+    const need = Math.max(0, Math.round(daily * 0.82) - used);
+    ev('survey-report', { type: 'end', status: 'idle', text: '완료', usage: { input: Math.round(need * 0.2), output: Math.round(need * 0.05), cacheRead: Math.round(need * 0.7), cacheWrite: need - Math.round(need * 0.2) - Math.round(need * 0.05) - Math.round(need * 0.7) } }, 15 * m);
+    requestApproval(paths, {
+      from: 'order', action: 'budget', text: '예산 82% — 계획 · 대시보드 부서 범주 필터 일정 다시 잡기',
+      reason: '오늘 전체 사용량이 하루 상한의 82% 입니다 (시연 값)', scope: '오늘 남은 토큰 예산', demo: true,
+    });
+  }
+  // v0.4 데스크톱 세션 inbox: 하나는 끝, 하나는 대기
+  const i1 = addInbox(paths, '결과지 A4 여백을 이 세션에서 바로 손봐 줘 (시연)');
+  takeInbox(paths);
+  doneInbox(paths, i1.id, '여백 12mm 로 맞추고 PDF 출력 확인 (시연)');
+  addInbox(paths, '메인 페이지 히어로 문구 두 안을 비교해 줘 (시연)');
   console.log('시연 기본 기록을 깔았습니다');
 }
 
 // 한 바퀴 시나리오. 끝나면 처음부터 다시 돈다.
-let ctx = {};
 let round = 0;
 const steps = [
   () => {
@@ -135,6 +167,17 @@ const steps = [
         from: 'backend', action: 'migrate', text: '부서 범주 마이그레이션을 로컬 DB 에 적용',
         reason: 'dev 마이그레이션 뒤 순서로 이름을 다시 만들었습니다. 적용해야 집계 API 를 시험할 수 있습니다.',
         scope: 'qugo_be_api/prisma/migrations/** (로컬 DB 만, 운영 DB 아님)', demo: true,
+        risk: 'high',
+        details: '**시연 데이터입니다 — 실제 마이그레이션이 아닙니다.**\n\n- 응답 집계에 `department_category` 열을 더합니다(부서명 대신 범주, k-익명성 기준).\n- 로컬 DB 에만 적용합니다. 운영 DB 는 건드리지 않습니다.',
+        files: ['qugo_be_api/prisma/schema.prisma', 'qugo_be_api/prisma/migrations/20261019_dept_category/migration.sql'],
+        commands: ['cd qugo_be_api', 'npx prisma migrate dev --name dept_category'],
+        diff: [
+          '-- 시연용 예시 SQL (실제 파일 아님)',
+          'ALTER TABLE "SurveyResponse" ADD COLUMN "departmentCategory" TEXT;',
+          'CREATE INDEX "SurveyResponse_org_dept_idx" ON "SurveyResponse" ("organizationId", "departmentCategory");',
+          'UPDATE "SurveyResponse" SET "departmentCategory" = \'기타\' WHERE "departmentCategory" IS NULL;',
+        ].join('\n'),
+        rollback: '로컬 DB 에서 npx prisma migrate reset 후 dev 브랜치 마이그레이션까지 다시 적용 (시연)',
       });
       ev('backend', { type: 'log', status: 'blocked', text: '승인 대기 · DB 마이그레이션' });
     }
@@ -145,8 +188,15 @@ const steps = [
     tool('site', 'Bash', '');
   },
   () => {
-    finish(ctx.site, 'h1 하나 유지, 부제 p 로, sitemap 수정일 갱신', usage(24800, 3100, 52000));
+    // v0.4: 끝난 작업은 검수 멤버(사업 문서)를 기다린다 → 칸반 "검수" 칸, 마지막 단계에서 통과
+    const u = usage(24800, 3100, 52000);
+    setTask(ctx.site.id, {
+      status: 'review', reviewer: 'biz-docs', summary: 'h1 하나 유지, 부제 p 로, sitemap 수정일 갱신', usage: u,
+      diffStat: [{ path: 'qugo_fe_web/app/page.tsx', add: 12, del: 4 }, { path: 'qugo_fe_web/app/sitemap.ts', add: 2, del: 1 }],
+    });
+    ev('site', { type: 'end', taskId: ctx.site.id, status: 'idle', text: '검수 대기', usage: u });
     msg('site', 'order', 'report', '메인 메타·h1 점검 끝. 부제는 p, sitemap 갱신. 테스트 통과.', ctx.site.id);
+    msg('site', 'biz-docs', 'handoff', '검수 부탁드립니다: 메인 페이지 메타·h1 점검', ctx.site.id);
   },
   () => {
     ctx.biz = task('biz-docs', '검진기관용 PoC 한 장 요약', 'KOSHA 근거 + 검진기관, 표본 건수 표기 금지', 'doing');
@@ -170,7 +220,25 @@ const steps = [
     msg('biz-docs', 'order', 'report', 'PoC 한 장 요약 초안 끝. 임상 자문은 "협의 중"으로 표기.', ctx.biz.id);
   },
   () => msg('order', 'human', 'report', '이번 지시 3건 완료, 백엔드 마이그레이션 순서 정리됨. push 는 보류 상태입니다.'),
+  () => {
+    // 검수 대기 작업이 있으면 검수 멤버가 통과시킨다(시연)
+    const r = readJsonl(paths.tasks).find((t) => t.status === 'review');
+    if (r) finishReview({ paths, task: r, reviewer: r.reviewer || 'biz-docs', verdict: { pass: true, note: '문구·금지어 확인, 통과 (시연)' } });
+    writeReport();
+  },
 ];
+
+/** 오늘 보고를 시연 폴더(data/demo/<project>/reports)에 쓴다 — 보드의 "보고" 탭 */
+function writeReport() {
+  const date = dateKey(Date.now());
+  const r = buildReport({
+    project: paths, date, members: loadMembers(paths), tasks: readJsonl(paths.tasks), messages: readJsonl(paths.messages),
+    approvals: loadApprovals(paths), events: readJsonl(paths.events).filter((e) => e.project === project), budget: loadConfig(ROOT).budget,
+  });
+  fs.mkdirSync(paths.reports, { recursive: true });
+  fs.writeFileSync(path.join(paths.reports, `${date}.md`), r.markdown.replace(/\n/, '\n\n> 시연 데이터로 만든 보고입니다.\n'), 'utf8');
+}
+writeReport();
 
 const interval = Math.max(300, Number(o.interval) || 2500);
 const limit = o.count ? Number(o.count) : Infinity;

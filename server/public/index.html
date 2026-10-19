@@ -34,24 +34,32 @@
       <a href="#squad" role="tab" class="tab" id="tab-squad" aria-controls="panel-squad">스쿼드</a>
       <a href="#tasks" role="tab" class="tab" id="tab-tasks" aria-controls="panel-tasks">작업</a>
       <a href="#chat" role="tab" class="tab" id="tab-chat" aria-controls="panel-chat">대화</a>
+      <a href="#report" role="tab" class="tab" id="tab-report" aria-controls="panel-report">보고</a>
     </nav>
     <div class="top-right">
-      <button type="button" class="confirm-badge" id="confirm-badge" hidden aria-haspopup="dialog">확인 대기 <b id="confirm-count">0</b></button>
-      <div class="runners" id="runners" aria-label="실행기 연결 상태"></div>
-      <button type="button" id="fx-toggle" class="fx-toggle" aria-pressed="false" title="빛 알갱이·파동·캐릭터 움직임을 줄입니다">효과 줄이기</button>
+      <button type="button" class="confirm-badge" id="confirm-badge" aria-controls="side" aria-expanded="false" title="확인할 일 패널 열고 닫기">확인 대기 <b id="confirm-count">0</b></button>
+      <button type="button" class="conn-chip" id="conn-chip" aria-haspopup="dialog" aria-expanded="false" aria-controls="conn-pop"><i aria-hidden="true"></i>연결 <b id="conn-count">-</b></button>
+      <button type="button" id="fx-toggle" class="icon-btn fx-toggle" aria-pressed="false" aria-label="효과 줄이기" title="빛 알갱이·파동·캐릭터 움직임을 줄입니다">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></svg>
+      </button>
       <button type="button" id="theme-toggle" class="icon-btn" aria-label="테마 바꾸기" title="테마 바꾸기">
         <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
         <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
       </button>
-      <span id="live" class="live" title="실시간 연결 상태"><i></i><span>연결 중</span></span>
+      <span id="live" class="live" title="실시간 연결 상태"><i></i><span class="sr-only">연결 중</span></span>
     </div>
   </header>
 
   <section class="cmdbar" aria-labelledby="order-label">
     <form id="order-form" class="cmd-form">
-      <label id="order-label" for="order-text" class="cmd-label">메인 오더에게 지시</label>
+      <label id="order-label" for="order-text" class="cmd-label">지시</label>
+      <select id="order-to" class="select" aria-label="받는 사람">
+        <option value="main">메인 AI(자동)</option>
+        <option value="desktop">데스크톱 Claude 세션</option>
+      </select>
       <input id="order-text" class="input" maxlength="1000" autocomplete="off" placeholder="예: 메인 페이지 SEO 문구를 점검하고 검진기관 안내를 보강해 줘">
       <button type="submit" class="btn btn-primary" id="order-submit">계획 만들기</button>
+      <button type="button" class="inbox-chip" id="inbox-chip" aria-haspopup="dialog" aria-expanded="false" aria-controls="inbox-pop" title="데스크톱 Claude 세션으로 보낸 지시">데스크톱 <b id="inbox-count">0</b></button>
     </form>
     <p class="form-error" id="order-error" role="alert"></p>
     <div class="plan" id="order-plan" hidden aria-live="polite"></div>
@@ -59,11 +67,7 @@
 
   <p class="auth-banner" id="auth-banner" role="alert" hidden>접속 토큰이 없습니다. 보드를 띄운 터미널에 찍힌 주소(<code>http://localhost:포트/?t=...</code>)로 다시 여세요.</p>
 
-  <section class="approvals" id="approvals" aria-labelledby="approvals-title" hidden>
-    <h2 id="approvals-title">승인 대기 <span class="count" id="approvals-count"></span></h2>
-    <ul class="approval-list" id="approval-list"></ul>
-  </section>
-
+  <div class="shell" id="shell">
   <main class="wrap">
     <section id="panel-squad" class="tabpanel" role="tabpanel" aria-labelledby="tab-squad">
       <div class="squad-bar">
@@ -128,6 +132,16 @@
       <div class="kanban" id="kanban"></div>
     </section>
 
+    <section id="panel-report" class="tabpanel panel report-panel" role="tabpanel" aria-labelledby="tab-report" hidden>
+      <div class="panel-head">
+        <h2>일일 보고</h2>
+        <label class="field-inline"><span>날짜</span><select id="report-date" class="select" aria-label="보고 날짜"></select></label>
+        <button type="button" class="btn btn-primary" id="report-make">오늘 보고 만들기</button>
+        <span class="panel-sub" id="report-sub">규칙 기반 요약입니다. 문장을 다듬으려면 터미널에서 <code>squad report &lt;project&gt; --ai</code></span>
+      </div>
+      <div class="report-body scroll md" id="report-body"></div>
+    </section>
+
     <section id="panel-chat" class="tabpanel panel convo-panel" role="tabpanel" aria-labelledby="tab-chat" hidden>
       <div class="panel-head">
         <h2 id="convo-title">대화</h2>
@@ -155,6 +169,17 @@
     </section>
   </main>
 
+  <aside class="side" id="side" aria-labelledby="side-title" hidden>
+    <div class="side-head">
+      <h2 id="side-title">확인할 일 <span class="count" id="side-count"></span></h2>
+      <button type="button" class="icon-btn" id="side-close" aria-label="확인 패널 닫기" title="닫기">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <ol class="side-list scroll" id="side-list" aria-live="polite"></ol>
+  </aside>
+  </div>
+
   <dialog class="modal" id="modal" aria-labelledby="modal-title">
     <div class="modal-box">
       <div class="modal-head">
@@ -171,22 +196,9 @@
     </div>
   </dialog>
 
-  <dialog class="modal confirm" id="confirm" aria-labelledby="confirm-title">
-    <div class="modal-box">
-      <div class="modal-head">
-        <div id="confirm-avatar"></div>
-        <div class="modal-title-wrap">
-          <h2 id="confirm-title"></h2>
-          <p id="confirm-sub" class="muted"></p>
-        </div>
-        <span class="confirm-left" id="confirm-left"></span>
-      </div>
-      <div class="modal-body" id="confirm-body"></div>
-      <div class="confirm-actions" id="confirm-actions"></div>
-    </div>
-  </dialog>
-
   <div class="popover" id="tech-pop" role="dialog" aria-label="사용 기술" hidden></div>
+  <div class="popover small-pop" id="conn-pop" role="dialog" aria-label="실행기 연결 상태" hidden></div>
+  <div class="popover small-pop" id="inbox-pop" role="dialog" aria-label="데스크톱 세션 지시" hidden></div>
 
   <div class="toast" id="toast" role="status" hidden></div>
   <script src="/app.js" type="module"></script>

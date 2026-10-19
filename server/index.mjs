@@ -10,7 +10,10 @@ import {
 } from '../lib/store.mjs';
 import { buildState } from '../lib/state.mjs';
 import { validateMessage, validateOrder, validatePlan, validateTask, validateTaskPatch } from '../lib/validate.mjs';
-import { planOrder, saveOrder } from '../lib/runner.mjs';
+import { budgetGate, planOrder, saveOrder } from '../lib/runner.mjs';
+import { addInbox, loadInbox } from '../lib/inbox.mjs';
+import { buildReport, dateKey, isDateKey } from '../lib/report.mjs';
+import { CAPTURE_RE } from '../lib/capture.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { LOGIN_COMMAND, runnerStatuses } from '../lib/runners/index.mjs';
 import { decideApproval, decisionText, loadApprovals } from '../lib/approvals.mjs';
@@ -50,7 +53,7 @@ function readBody(req) {
 
 /** 바뀌었는지 볼 파일들의 (수정 시각, 크기) 지문. */
 function signature(paths) {
-  const files = [paths.tasks, paths.messages, paths.events, paths.approvals, paths.toggles].filter(Boolean);
+  const files = [paths.tasks, paths.messages, paths.events, paths.approvals, paths.toggles, paths.inbox].filter(Boolean);
   try {
     for (const d of fs.readdirSync(paths.members)) {
       if (isId(d)) files.push(path.join(paths.members, d, 'MEMBER.md'), path.join(paths.members, d, 'NOTES.md'));
@@ -159,9 +162,10 @@ export function startBoard({
 
   function state(id) {
     const p = pathsOf(id);
+    const config = loadConfig(root);
     return buildState({
       project: p, members: loadMembers(p), tasks: readJsonl(p.tasks), messages: readJsonl(p.messages), events: readJsonl(p.events),
-      approvals: loadApprovals(p), stale: loadConfig(root).stale, demo,
+      approvals: loadApprovals(p), stale: config.stale, budget: config.budget, inbox: loadInbox(p), demo,
     });
   }
 
@@ -219,6 +223,10 @@ export function startBoard({
         const v = validateOrder(body);
         if (v.error) return send(res, 400, v);
         if (ordering) return send(res, 409, { error: '이미 계획을 만드는 중입니다. 끝난 뒤 다시 보내 주세요' });
+        // 예산: 100% 를 넘으면 계획을 만들지 않고, 80% 를 넘으면 확인 패널의 예산 승인을 먼저 받는다
+        const g = budgetGate({ root, paths: p, members: loadMembers(p), subject: 'order', what: `계획 · ${v.instruction.slice(0, 80)}` });
+        if (!g.ok && g.level === 'over') return send(res, 429, { error: `예산 초과: ${g.check.reason} — 계획을 만들지 않았습니다`, budget: 'over' });
+        if (!g.ok) return send(res, 409, { error: `예산 경고: ${g.check.reason}. 확인 패널에서 예산 승인을 한 뒤 다시 보내 주세요`, budget: 'warn', approvalId: g.approval.id });
         ordering = true;
         try {
           const { plan, usage } = await planner({ root, paths: p, members: loadMembers(p), instruction: v.instruction, stderr: 'pipe' });
@@ -248,6 +256,25 @@ export function startBoard({
         } catch (e) {
           return send(res, /이미/.test(e.message) ? 409 : 400, { error: e.message });
         }
+      }
+      if (url.pathname === '/api/inbox') {
+        try {
+          return send(res, 201, addInbox(p, body.text));
+        } catch (e) {
+          return send(res, 400, { error: e.message });
+        }
+      }
+      if (url.pathname === '/api/report') {
+        const date = body.date === undefined ? dateKey(Date.now()) : body.date;
+        if (!isDateKey(date)) return send(res, 400, { error: '날짜는 YYYY-MM-DD 로 써 주세요' });
+        const config = loadConfig(root);
+        const r = buildReport({
+          project: p, date, members: loadMembers(p), tasks: readJsonl(p.tasks), messages: readJsonl(p.messages),
+          approvals: loadApprovals(p), events: readJsonl(p.events).filter((e) => e.project === pid), budget: config.budget,
+        });
+        fs.mkdirSync(p.reports, { recursive: true });
+        fs.writeFileSync(path.join(p.reports, `${date}.md`), r.markdown, 'utf8');
+        return send(res, 201, { date, markdown: r.markdown });
       }
       if (url.pathname === '/api/member/toggle') {
         const m = loadMembers(p).find((x) => x.id === body.id);
@@ -279,10 +306,36 @@ export function startBoard({
       const ps = loadProjects(root);
       return send(res, 200, { demo, projects: Object.entries(ps).map(([id, v]) => ({ id, name: v.name || id })) });
     }
+    if (url.pathname === '/api/capture') {
+      // 캡처 PNG: data/captures 안의 정해진 이름 모양만
+      const name = url.searchParams.get('name') || '';
+      if (!CAPTURE_RE.test(name)) return send(res, 400, { error: '캡처 이름이 잘못됐습니다' });
+      return fs.readFile(path.join(root, 'data', 'captures', name), (err, data) =>
+        err ? send(res, 404, { error: '캡처가 없습니다' }) : send(res, 200, data, 'image/png', { 'Cache-Control': 'private, max-age=86400' }),
+      );
+    }
     if (url.pathname.startsWith('/api/')) {
       if (!isId(project) || !loadProjects(root)[project]) return send(res, 404, { error: '프로젝트가 없습니다' });
     }
     if (url.pathname === '/api/state') return send(res, 200, state(project));
+    if (url.pathname === '/api/reports') {
+      let dates = [];
+      try {
+        dates = fs.readdirSync(pathsOf(project).reports).filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f)).map((f) => f.slice(0, 10)).sort().reverse();
+      } catch {
+        // 아직 보고가 없다
+      }
+      return send(res, 200, { dates, today: dateKey(Date.now()) });
+    }
+    if (url.pathname === '/api/report') {
+      const date = url.searchParams.get('date') || '';
+      if (!isDateKey(date)) return send(res, 400, { error: '날짜가 잘못됐습니다' });
+      try {
+        return send(res, 200, { date, markdown: fs.readFileSync(path.join(pathsOf(project).reports, `${date}.md`), 'utf8') });
+      } catch {
+        return send(res, 404, { error: '그날 보고가 없습니다' });
+      }
+    }
     if (url.pathname === '/api/member') {
       const id = url.searchParams.get('id') || '';
       if (!isId(id)) return send(res, 400, { error: '멤버 id 가 잘못됐습니다' });

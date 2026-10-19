@@ -1,11 +1,12 @@
 // AI Squad 보드 화면. 프레임워크 없이 상태 하나를 받아 전부 다시 그린다.
 import { SIZE, character, drawCharacter } from './pixel.js';
+import { budgetLevel, canApprove, confirmItems, looksLikeDiff, panelDecision, renderDiff } from './logic.js';
 const $ = (s) => document.querySelector(s);
 const STATUS = { working: '일하는 중', idle: '대기', blocked: '막힘' };
 const KIND = { order: '지시', handoff: '인계', question: '질문', answer: '답변', report: '완료 보고', note: '메모' };
-const TASK_COLS = [['todo', '할 일'], ['doing', '진행 중'], ['blocked', '막힘'], ['done', '완료']];
+const TASK_COLS = [['todo', '할 일'], ['doing', '진행 중'], ['review', '검수'], ['blocked', '막힘'], ['done', '완료']];
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
-const ACTION = { push: 'push', deploy: '배포', migrate: 'DB 마이그레이션', send: '외부 발송', delete: '삭제' };
+const ACTION = { push: 'push', deploy: '배포', migrate: 'DB 마이그레이션', send: '외부 발송', delete: '삭제', budget: '예산 확인' };
 const LITE_MEMBERS = 12; // 이보다 많으면 저절로 가벼운 효과
 const MAX_PARTICLES = 30;
 const MAX_RIPPLES = 12;
@@ -20,8 +21,6 @@ const ui = {
   openRows: new Set(),
   techOpen: null, // 사용 기술 팝오버가 열린 멤버 id
   runners: [],
-  later: new Set(), // 확인 모달에서 [나중에]로 미룬 것
-  seenConfirm: new Set(), // 이미 한 번 띄운 확인 — 새로 들어온 것만 모달을 연다
   frame: 0,
   seenMsgs: null,
   seenEvents: null,
@@ -78,6 +77,8 @@ const techOn = (m) => (m.pluginList || []).filter((p) => p.on).length + (m.headr
 const techAll = (m) => (m.pluginList || []).length + 1;
 const techCount = (m) => `${techOn(m)} / ${techAll(m)}`;
 const fmtTok = (n) => (n || 0).toLocaleString('ko-KR');
+/** 짧은 토큰 표기: 1.2만 / 350만 */
+const fmtShort = (n) => (n >= 1e8 ? `${(n / 1e8).toFixed(1)}억` : n >= 1e4 ? `${(n / 1e4).toFixed(n >= 1e6 ? 0 : 1)}만` : fmtTok(n));
 const usageTotal = (u) => (u ? (u.input || 0) + (u.output || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0) : 0);
 function techBlock(m) {
   const sw = (kind, name, on, label) =>
@@ -97,6 +98,7 @@ function eventLabel(e) {
   if (e.type === 'end') return `작업 끝${e.text ? ' · ' + e.text : ''}`;
   return e.text || '';
 }
+const ICON_LOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
 const ICON_CHEV = '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
 const ICON_ARROW = '<svg class="arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
 
@@ -116,7 +118,7 @@ async function api(url, body) {
     $('#auth-banner').hidden = false;
     source?.close();
   }
-  if (!res.ok) throw new Error(data.error || `요청 실패 (${res.status})`);
+  if (!res.ok) throw Object.assign(new Error(data.error || `요청 실패 (${res.status})`), { data });
   return data;
 }
 
@@ -135,10 +137,14 @@ async function load() {
       ui.newMsgIds = new Set(fresh.map((m) => m.id));
       ui.data = data;
       render();
-      net.sync(data, first);
-      for (const m of fresh) net.message(m);
-      for (const e of freshEvents) net.event(e);
-      syncConfirm();
+      syncSide();
+      try {
+        net.sync(data, first);
+        for (const m of fresh) net.message(m);
+        for (const e of freshEvents) net.event(e);
+      } catch (x) {
+        console.warn('연결 그림을 그리지 못했습니다', x);
+      }
     } catch (e) {
       toast(e.message);
     } finally {
@@ -157,11 +163,13 @@ function connect() {
   source.addEventListener('hello', () => {
     live.classList.add('is-on');
     live.lastElementChild.textContent = '실시간';
+    live.title = '실시간 연결됨';
   });
   source.addEventListener('change', () => load());
   source.onerror = () => {
     live.classList.remove('is-on');
     live.lastElementChild.textContent = '다시 연결 중';
+    live.title = '다시 연결 중';
   };
 }
 
@@ -171,15 +179,18 @@ function render() {
   if (!d) return;
   $('#demo-badge').hidden = !d.demo;
   const tt = d.tokensToday || { total: 0 };
+  const bd = d.budget || { daily: 0, ratio: 0 };
+  const lv = budgetLevel(bd.ratio, bd.warn);
+  const tip = `입력 ${fmtTok(tt.input)} · 출력 ${fmtTok(tt.output)} · 캐시 읽기 ${fmtTok(tt.cacheRead)} · 캐시 쓰기 ${fmtTok(tt.cacheWrite)}${tt.costUsd !== undefined ? ` · US$${tt.costUsd}` : ''}${bd.daily ? ` · 하루 상한 ${fmtTok(bd.daily)} (${Math.round(bd.ratio * 100)}%)` : ' · 상한 없음'}${bd.task ? ` · 작업당 ${fmtTok(bd.task)}` : ''}`;
   $('#stats').innerHTML = [
     ['is-working', '일하는 중', d.counts.working],
-    ['', '대기 작업', d.counts.pending],
+    ['', '대기', d.counts.pending + (d.counts.review ? ` · 검수 ${d.counts.review}` : '')],
     ['is-blocked', '막힘', d.counts.blocked],
-    ['', '오늘 토큰', fmtTok(tt.total), `입력 ${fmtTok(tt.input)} · 출력 ${fmtTok(tt.output)} · 캐시 읽기 ${fmtTok(tt.cacheRead)} · 캐시 쓰기 ${fmtTok(tt.cacheWrite)}${tt.costUsd !== undefined ? ` · $${tt.costUsd}` : ''}`],
-  ].map(([c, l, n, t]) => `<span class="stat ${c}"${t ? ` title="${esc(t)}"` : ''}>${l} <b>${n}</b></span>`).join('');
+  ].map(([c, l, n]) => `<span class="stat ${c}">${l} <b>${n}</b></span>`).join('') +
+    `<span class="stat tok-chip lv-${lv}" title="${esc(tip)}">토큰 <b>${fmtShort(tt.total)}</b>${bd.daily ? `<span class="bar" role="meter" aria-label="오늘 토큰 사용률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round(bd.ratio * 100))}"><i style="width:${Math.min(100, bd.ratio * 100).toFixed(1)}%"></i></span><small>/ ${fmtShort(bd.daily)}</small>` : ''}</span>`;
   applyFx();
   fillSelects();
-  renderApprovals();
+  renderInbox();
   renderCards();
   refreshTech();
   renderRows();
@@ -223,12 +234,27 @@ function renderCards() {
       <div class="card-event">${ev ? `<span title="${esc(eventLabel(ev))}">${esc(eventLabel(ev))}</span><time datetime="${esc(ev.at)}" title="${esc(fullTime(ev.at))}">${rel(ev.at)}</time>` : '<span>이벤트 없음</span>'}</div>
       <div class="card-foot">
         <button type="button" class="tech-toggle" data-tech="${esc(m.id)}" aria-expanded="${open}" aria-haspopup="dialog" aria-controls="tech-pop">켜진 기술 ${techCount(m)} ${ICON_CHEV}</button>
-        <span class="tok" title="이번 작업에 쓴 토큰(입력·출력·캐시). 오늘 ${fmtTok(m.tokens?.today)} · 누적 ${fmtTok(m.tokens?.all)}">이번 작업 ${fmtTok(m.tokens?.task)}토큰</span>
+        ${memberUse(m)}
       </div>
     </article>`;
   }).join('');
   $('#cards').innerHTML = html || '<p class="empty">멤버가 없습니다. <code>node bin/squad.mjs init</code> 으로 스쿼드를 만드세요.</p>';
 }
+
+/** 카드의 토큰: 하루 상한이 있으면 오늘 사용률 막대, 없으면 이번 작업 토큰 */
+function memberUse(m) {
+  const t = m.tokens || {};
+  const tip = `이번 작업 ${fmtTok(t.task)} · 오늘 ${fmtTok(t.today)} · 누적 ${fmtTok(t.all)}토큰${m.budgetLimit ? ` · 하루 상한 ${fmtTok(m.budgetLimit)}` : ''}`;
+  if (!m.budgetLimit) return `<span class="tok" title="${esc(tip)}">이번 작업 ${fmtShort(t.task)}토큰</span>`;
+  const r = (t.today || 0) / m.budgetLimit;
+  return `<span class="tok use lv-${budgetLevel(r, ui.data.budget?.warn)}" title="${esc(tip)}">오늘 ${Math.round(r * 100)}%<span class="bar"><i style="width:${Math.min(100, r * 100).toFixed(1)}%"></i></span></span>`;
+}
+
+/** 첨부된 화면 캡처 썸네일 */
+const capUrl = (name) => `/api/capture?name=${encodeURIComponent(name)}`;
+const thumbs = (atts, n = 1) =>
+  (atts || []).filter((x) => x.type === 'capture').slice(-n).reverse()
+    .map((x) => `<a class="thumb" href="${capUrl(x.name)}" target="_blank" rel="noopener" title="화면 캡처 ${esc(x.width)}×${esc(x.height)} · ${esc(fullTime(x.at))}"><img src="${capUrl(x.name)}" alt="화면 캡처 ${esc(x.width)}×${esc(x.height)}" loading="lazy" width="160" height="100"></a>`).join('');
 
 /** 뒤처짐 표시: 멈춤, 답 없는 인계 */
 const flags = (m) =>
@@ -295,8 +321,13 @@ function renderKanban() {
     if (s === 'done') list = list.slice().sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')).slice(0, 8);
     return `<div class="col" data-s="${s}">
       <div class="col-head"><i></i>${label}<span class="count">${total}</span></div>
-      ${list.map((t) => `<article class="tcard" data-task="${esc(t.id)}">
-        <div class="tcard-title">${esc(t.title)}</div>
+      ${list.map((t) => `<article class="tcard${t.waitingOn?.length ? ' is-locked' : ''}" data-task="${esc(t.id)}">
+        <div class="tcard-title">${t.waitingOn?.length ? `<span class="lock" title="선행 작업이 남아 있어 아직 시작할 수 없습니다">${ICON_LOCK}</span>` : ''}${esc(t.title)}</div>
+        ${t.dependsOn?.length ? `<div class="tcard-deps" title="먼저 끝나야 하는 작업">선행: ${t.dependsOn.map((id) => { const x = d.tasks.find((y) => y.id === id); return `<span class="${x?.status === 'done' ? 'is-done' : ''}">${esc(x?.title || id)}</span>`; }).join(', ')}</div>` : ''}
+        ${t.status === 'review' ? `<div class="tcard-review">검수: ${esc(nameOf(t.reviewer || ''))}${t.diffStat?.length ? ` · 파일 ${t.diffStat.length}개` : ''}</div>` : ''}
+        ${t.reviewNote && t.status === 'todo' ? `<div class="tcard-review is-reject" title="${esc(t.reviewNote)}">검수 반려: ${esc(t.reviewNote)}</div>` : ''}
+        ${t.blockedReason ? `<div class="tcard-review is-reject">${esc(t.blockedReason)}</div>` : ''}
+        ${thumbs(t.attachments)}
         ${t.summary || t.detail ? `<div class="tcard-sum" title="${esc(t.summary || t.detail)}">${esc(t.summary || t.detail)}</div>` : ''}
         ${t.usage ? `<div class="tok" title="이 작업에 쓴 토큰">${fmtTok(usageTotal(t.usage))}토큰</div>` : ''}
         <div class="tcard-foot">${avatar(t.member, 'sm')}
@@ -321,6 +352,7 @@ function renderConvo() {
       <div class="msg-meta"><b>${esc(nameOf(m.from))}</b>${ICON_ARROW}<b>${esc(nameOf(m.to))}</b>${kindTag(m.kind)}${wait.has(m.id) ? '<span class="flag is-wait">답 없는 인계</span>' : ''}<time title="${esc(fullTime(m.at))}">${rel(m.at)}</time></div>
       <div class="msg-text">${esc(m.text)}</div>
       ${m.taskId ? `<div class="msg-task mono">${esc(m.taskId)}</div>` : ''}
+      ${m.attachments ? `<div class="thumbs">${thumbs(m.attachments, 3)}</div>` : ''}
     </div>
   </li>`).join('') || '<li class="empty">아직 기록이 없습니다 — 위 지시 창에 첫 지시를 입력하세요.<br>아래에서 메시지를 보내거나 <code>squad msg</code> 로 남길 수도 있습니다.</li>';
   ui.newMsgIds.clear();
@@ -417,6 +449,10 @@ function renderModal() {
   const d = ui.data;
   const doc = docs.get(m.id);
   const queued = d.tasks.filter((t) => t.member === m.id && t.status !== 'done');
+  // 이 멤버가 남긴 캡처(메시지 첨부)와 이 멤버 작업의 캡처
+  const caps = [...d.messages.filter((x) => x.from === m.id).flatMap((x) => x.attachments || []), ...d.tasks.filter((t) => t.member === m.id).flatMap((t) => t.attachments || [])]
+    .filter((x, i, all) => x.type === 'capture' && all.findIndex((y) => y.name === x.name) === i)
+    .sort((a, b) => String(a.at).localeCompare(String(b.at)));
   const html = `
     <div class="modal-grid">
       <div>
@@ -429,6 +465,7 @@ function renderModal() {
         <section><h3>최근 이벤트</h3>${eventList(d.events.filter((e) => e.member === m.id), 15)}</section>
         <section><h3>담당 경로</h3>${pathList(m.owns)}</section>
         <section><h3>켜진 기술 ${techCount(m)}</h3>${techBlock(m)}</section>
+        ${caps.length ? `<section><h3>화면 캡처 ${caps.length}</h3><div class="thumbs">${thumbs(caps, 6)}</div></section>` : ''}
       </div>
     </div>
     <details class="doc"><summary>MEMBER.md 원문</summary><div class="md">${doc ? mdToHtml(doc.member) : '<p class="muted">불러오는 중</p>'}</div></details>
@@ -873,17 +910,25 @@ document.addEventListener('change', async (e) => {
   }
 });
 
-// ── 실행기(runner) 연결 상태 ──
+// ── 실행기(runner) 연결 상태: 머리줄에는 "연결 n/m" 칩 하나, 누르면 팝오버 ──
+const connPop = $('#conn-pop');
 function renderRunners() {
-  $('#runners').innerHTML = ui.runners
-    .map((r) => `<span class="runner st-${esc(r.state)}" title="${esc([r.label, r.main ? '메인 AI' : '', r.secretSet !== undefined ? `키 ${r.secretSet ? '설정됨' : '없음'}` : '', r.detail].filter(Boolean).join(' · '))}"><i aria-hidden="true"></i>${esc(r.name)} <b>${esc(r.stateLabel)}</b>${r.secretSet !== undefined ? `<small>키 ${r.secretSet ? '설정됨' : '없음'}</small>` : ''}${r.canLogin ? `<button type="button" class="btn btn-sm" data-login="${esc(r.name)}">로그인 창 열기</button>` : ''}</span>`)
-    .join('');
+  const ok = ui.runners.filter((r) => r.state === 'ok').length;
+  const chip = $('#conn-chip');
+  $('#conn-count').textContent = ui.runners.length ? `${ok}/${ui.runners.length}` : '-';
+  chip.className = `conn-chip${ui.runners.some((r) => r.canLogin) ? ' is-login' : ok ? ' is-ok' : ''}`;
+  chip.title = ui.runners.map((r) => `${r.name}: ${r.stateLabel}`).join(' · ') || '실행기 연결 상태';
+  connPop.innerHTML = `<div class="pop-head"><b>실행기 연결</b><span class="muted">${ok}/${ui.runners.length} 연결됨</span></div>
+    <ul class="conn-list">${ui.runners
+      .map((r) => `<li class="runner st-${esc(r.state)}"><i aria-hidden="true"></i><span class="grow"><b>${esc(r.name)}</b>${r.main ? ' <small>메인 AI</small>' : ''}<br><small>${esc([r.label, r.secretSet !== undefined ? `키 ${r.secretSet ? '설정됨' : '없음'}` : '', r.detail].filter(Boolean).join(' · '))}</small></span><span class="st">${esc(r.stateLabel)}</span>${r.canLogin ? `<button type="button" class="btn btn-sm" data-login="${esc(r.name)}">로그인 창 열기</button>` : ''}</li>`)
+      .join('')}</ul>
+    <p class="muted small">로그인은 새 콘솔 창과 브라우저에서 직접 합니다. 이 화면은 비밀번호·키를 받지 않습니다.</p>`;
 }
 async function loadRunners(refresh = false) {
   try {
     ui.runners = (await api(`/api/runners${refresh ? '?refresh=1' : ''}`)).runners;
     renderRunners();
-    syncConfirm();
+    syncSide();
   } catch {
     // 상태를 못 읽어도 보드는 돈다
   }
@@ -903,177 +948,223 @@ async function openLogin(name) {
     toast(x.message);
   }
 }
-$('#runners').addEventListener('click', (e) => {
+
+/** 머리줄의 작은 팝오버(연결·데스크톱 inbox) 공용: 단추 아래에 띄우고, 바깥 클릭·Esc 로 닫는다. */
+const pops = { conn: { btn: '#conn-chip', pop: connPop }, inbox: { btn: '#inbox-chip', pop: $('#inbox-pop') } };
+function togglePop(name, force) {
+  const { btn, pop } = pops[name];
+  const b = $(btn);
+  const open = force ?? pop.hidden;
+  for (const k of Object.keys(pops)) if (k !== name) closePop(k);
+  pop.hidden = !open;
+  b.setAttribute('aria-expanded', String(open));
+  if (open) {
+    const r = b.getBoundingClientRect();
+    pop.style.top = `${r.bottom + 6}px`;
+    pop.style.left = `${Math.max(8, Math.min(r.right - pop.offsetWidth, innerWidth - pop.offsetWidth - 8))}px`;
+  }
+}
+function closePop(name) {
+  const { btn, pop } = pops[name];
+  if (pop.hidden) return;
+  pop.hidden = true;
+  $(btn).setAttribute('aria-expanded', 'false');
+}
+$('#conn-chip').addEventListener('click', () => togglePop('conn'));
+$('#inbox-chip').addEventListener('click', () => togglePop('inbox'));
+connPop.addEventListener('click', (e) => {
   const b = e.target.closest('[data-login]');
   if (b) openLogin(b.dataset.login);
 });
-
-// ── 승인 대기 칸 ──
-const pendingApprovals = () => (ui.data?.approvals || []).filter((a) => a.status === 'pending');
-function renderApprovals() {
-  const list = pendingApprovals();
-  $('#approvals').hidden = !list.length;
-  $('#approvals-count').textContent = list.length ? `${list.length}건` : '';
-  $('#approval-list').innerHTML = list
-    .map((a) => `<li class="approval">${avatar(a.from, 'sm')}<b>${esc(nameOf(a.from))}</b><span class="kind" style="--kc:var(--warn)">${esc(ACTION[a.action] || a.action)}</span>
-      <span class="grow" title="${esc(a.text)}">${esc(a.text)}</span><time title="${esc(fullTime(a.at))}">${rel(a.at)}</time>
-      <button type="button" class="btn btn-sm btn-primary" data-approve="${esc(a.id)}">승인</button>
-      <button type="button" class="btn btn-sm" data-reject="${esc(a.id)}">거절</button></li>`)
-    .join('');
-}
-async function decide(id, decision, note = '') {
-  try {
-    await api('/api/approvals/decide', { project: ui.project, id, decision, note });
-    toast(decision === 'approved' ? '승인했습니다' : '거절했습니다');
-  } catch (x) {
-    toast(x.message);
-  }
-  load();
-}
-$('#approval-list').addEventListener('click', (e) => {
-  const ok = e.target.closest('[data-approve]');
-  if (ok) return decide(ok.dataset.approve, 'approved');
-  const no = e.target.closest('[data-reject]');
-  if (no) {
-    ui.later.delete(`ap:${no.dataset.reject}`);
-    openConfirm(`ap:${no.dataset.reject}`, true);
-  }
+document.addEventListener('pointerdown', (e) => {
+  for (const [k, { btn, pop }] of Object.entries(pops)) if (!pop.hidden && !pop.contains(e.target) && !e.target.closest(btn)) closePop(k);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  for (const k of Object.keys(pops)) closePop(k);
 });
 
-// ── 확인 모달: 승인 요청 · 배정 기다리는 계획 · 로그인 필요를 줄 세워 하나씩 ──
-const confirmDlg = $('#confirm');
-const cf = { key: null, rejecting: false };
-const BASE_TITLE = document.title;
-function confirmItems() {
-  const items = pendingApprovals().map((a) => ({ key: `ap:${a.id}`, type: 'approval', a }));
-  if (order.plan) items.push({ key: `plan:${order.instruction}`, type: 'plan' });
-  for (const r of ui.runners) if (r.canLogin) items.push({ key: `login:${r.name}`, type: 'login', r });
-  return items;
+// ── 데스크톱 Claude 세션 inbox ──
+const INBOX = { pending: '대기', taking: '처리 중', done: '끝' };
+function renderInbox() {
+  const list = (ui.data?.inbox || []).slice().reverse();
+  const c = ui.data?.counts || {};
+  $('#inbox-count').textContent = c.inboxTaking ? `${c.inbox || 0} · 처리 중 ${c.inboxTaking}` : String(c.inbox || 0);
+  $('#inbox-chip').classList.toggle('is-wait', Boolean(c.inbox));
+  $('#inbox-pop').innerHTML = `<div class="pop-head"><b>데스크톱 Claude 세션</b><span class="muted">대기 ${c.inbox || 0} · 처리 중 ${c.inboxTaking || 0}</span></div>
+    ${list.length ? `<ul class="inbox-list">${list.map((i) => `<li class="ib-${esc(i.status)}"><div class="ib-top"><span class="tag">${INBOX[i.status]}</span><span class="mono">${esc(i.id)}</span><time title="${esc(fullTime(i.at))}">${rel(i.at)}</time></div><div class="ib-text">${esc(i.text)}</div>${i.result ? `<div class="ib-result">${esc(i.result)}</div>` : ''}</li>`).join('')}</ul>` : '<p class="empty">아직 보낸 지시가 없습니다</p>'}
+    <p class="muted small">데스크톱 세션에서 <code>squad inbox ${esc(ui.project)} --take</code> 로 가져가고 <code>squad inbox done &lt;id&gt; "결과"</code> 로 끝냅니다.</p>`;
 }
+
+// ── 확인 패널: 승인 → 예산 → 계획 → 로그인. 모달 대신 오른쪽에 밀어내는 패널 ──
+const side = $('#side');
+const sideUi = { open: store('squad.side') === '1', seen: new Set(), rejecting: null, viewed: new Set(), expanded: new Set(), fresh: new Set() };
+const BASE_TITLE = document.title;
+const pendingApprovals = () => (ui.data?.approvals || []).filter((a) => a.status === 'pending');
+const items = () => confirmItems({ approvals: pendingApprovals(), plan: order.plan ? order : null, runners: ui.runners });
 function updateTitle(n) {
   document.title = document.hidden && n ? `(확인 ${n}) ${BASE_TITLE}` : BASE_TITLE;
 }
-document.addEventListener('visibilitychange', () => updateTitle(confirmItems().length));
+document.addEventListener('visibilitychange', () => updateTitle(items().length));
 
-/** 상태가 바뀔 때마다: 배지·제목을 맞추고, 새로 들어온 확인이 있으면 모달을 연다. 다른 곳에서 처리된 것은 지운다. */
-function syncConfirm() {
-  const items = confirmItems();
-  const keys = new Set(items.map((i) => i.key));
-  for (const k of [...ui.later]) if (!keys.has(k)) ui.later.delete(k);
-  const fresh = items.filter((i) => !ui.seenConfirm.has(i.key));
-  for (const i of items) ui.seenConfirm.add(i.key);
-  $('#confirm-badge').hidden = !items.length;
-  $('#confirm-count').textContent = items.length;
-  updateTitle(items.length);
-  if (confirmDlg.open) {
-    if (keys.has(cf.key)) {
-      // 보고 있는 것은 다시 그리지 않는다(쓰던 거절 사유·포커스 유지). 남은 건수만 고친다.
-      $('#confirm-left').textContent = items.length > 1 ? `남은 확인 ${items.length - 1}건` : '';
-      return;
-    }
-    cf.rejecting = false;
-    const next = items.find((i) => !ui.later.has(i.key));
-    if (next) {
-      cf.key = next.key;
-      renderConfirm(items);
-    } else confirmDlg.close();
-  } else if (fresh.length) {
-    openConfirm(fresh[0].key);
-  }
+function setSide(open) {
+  sideUi.open = open;
+  store('squad.side', open ? '1' : '0');
+  side.hidden = !open;
+  document.body.classList.toggle('has-side', open);
+  $('#confirm-badge').setAttribute('aria-expanded', String(open));
 }
-function openConfirm(key, rejecting = false) {
-  const items = confirmItems();
-  const it = items.find((i) => i.key === key) || items.find((i) => !ui.later.has(i.key));
-  if (!it) return;
-  cf.key = it.key;
-  cf.rejecting = rejecting;
-  renderConfirm(items);
-  if (!confirmDlg.open) confirmDlg.showModal();
-  (confirmDlg.querySelector('#reject-note') || confirmDlg.querySelector('[data-act]'))?.focus();
+
+/** 상태가 바뀔 때마다(첫 상태 포함): 배지·제목을 맞추고, 새 확인이 있으면 패널을 펼쳐 그 카드를 잠깐 강조한다. */
+function syncSide() {
+  const list = items();
+  const d = panelDecision({ items: list, seen: sideUi.seen, open: sideUi.open });
+  sideUi.seen = d.seen;
+  const keys = new Set(list.map((i) => i.key));
+  for (const set of [sideUi.viewed, sideUi.expanded]) for (const k of [...set]) if (!keys.has(k)) set.delete(k);
+  if (sideUi.rejecting && !keys.has(sideUi.rejecting)) sideUi.rejecting = null;
+  sideUi.fresh = new Set(d.fresh);
+  $('#confirm-count').textContent = list.length;
+  $('#confirm-badge').classList.toggle('is-empty', !list.length);
+  updateTitle(list.length);
+  if (d.open !== sideUi.open) setSide(d.open);
+  renderSide(list);
 }
+
+const btn = (act, label, cls = '', extra = '') => `<button type="button" class="btn btn-sm ${cls}" data-act="${act}"${extra}>${label}</button>`;
 /** 영향 범위: 요청에 적힌 scope, 없으면 그 멤버의 담당 경로 */
 const scopeOf = (from, scope) => scope || (member(from)?.owns || []).join(', ') || '적지 않음';
-function renderConfirm(items) {
-  const it = items.find((i) => i.key === cf.key);
-  if (!it) return;
-  const left = items.length - 1;
-  $('#confirm-left').textContent = left > 0 ? `남은 확인 ${left}건` : '';
-  const btn = (act, label, cls = '') => `<button type="button" class="btn ${cls}" data-act="${act}">${label}</button>`;
-  let av = '', title = '', sub = '', body = '', acts = '';
-  if (it.type === 'approval') {
+const RISK = { low: '낮음', medium: '보통', high: '높음' };
+
+function detailBlock(a) {
+  const task = a.taskId && ui.data.tasks.find((t) => t.id === a.taskId);
+  return `<div class="ap-detail">
+    ${a.details ? `<section><h4>설명</h4><div class="md">${mdToHtml(a.details)}</div></section>` : ''}
+    ${a.commands?.length ? `<section><h4>실행할 명령</h4><pre class="cmd">${a.commands.map(esc).join('\n')}</pre></section>` : ''}
+    ${a.files?.length ? `<section><h4>파일 ${a.files.length}개</h4><ul class="paths">${a.files.map((f) => `<li class="mono" title="${esc(f)}">${esc(f)}</li>`).join('')}</ul></section>` : ''}
+    ${a.diff ? `<section><h4>${looksLikeDiff(a.diff) ? '바뀌는 내용(diff)' : '바뀌는 내용(SQL 등)'}</h4><div class="diff-box">${renderDiff(a.diff)}</div></section>` : ''}
+    ${a.rollback ? `<section><h4>되돌리는 방법</h4><p class="handoff">${esc(a.rollback)}</p></section>` : ''}
+    ${task ? `<section><h4>관련 작업</h4><button type="button" class="link task-link" data-goto-task="${esc(task.id)}">${esc(task.title)} <span class="mono">${esc(task.id)}</span></button></section>` : ''}
+    ${!a.details && !a.commands?.length && !a.files?.length && !a.diff && !a.rollback && !task ? '<p class="muted small">요청에 상세 내용이 없습니다</p>' : ''}
+  </div>`;
+}
+
+function cardHtml(it) {
+  const fresh = sideUi.fresh.has(it.key) ? ' is-fresh' : '';
+  if (it.type === 'approval' || it.type === 'budget') {
     const a = it.a;
-    av = avatar(a.from, 'lg');
-    title = `${nameOf(a.from)} — ${ACTION[a.action] || a.action} 승인 요청`;
-    sub = `${esc(rel(a.at))}${a.taskId ? ` · <span class="mono">${esc(a.taskId)}</span>` : ''}`;
-    body = `<dl class="kv confirm-kv"><dt>하려는 일</dt><dd>${esc(a.text)}</dd><dt>이유</dt><dd>${esc(a.reason || '적지 않음')}</dd><dt>영향 범위</dt><dd class="mono">${esc(scopeOf(a.from, a.scope))}</dd></dl>
-      ${cf.rejecting ? `<label class="reject-box"><span>거절 사유 (요청한 멤버에게 갑니다)</span><textarea id="reject-note" class="input" rows="2" maxlength="300" placeholder="예: 테스트 통과를 먼저 확인해 주세요"></textarea></label>` : ''}`;
-    acts = cf.rejecting ? btn('back', '돌아가기', 'btn-ghost') + btn('reject-send', '거절 보내기', 'btn-danger') : btn('later', '나중에', 'btn-ghost') + btn('reject', '거절') + btn('approve', '승인', 'btn-primary');
-  } else if (it.type === 'plan') {
-    const owners = [...new Set(order.plan.map((p) => p.member))];
-    av = avatar('order', 'lg');
-    title = '메인 오더 계획 — 배정 확인';
-    sub = `작업 ${order.plan.length}개 · 아직 저장하지 않았습니다`;
-    body = `<dl class="kv confirm-kv"><dt>지시</dt><dd>${esc(order.instruction)}</dd><dt>영향 범위</dt><dd class="mono">${esc(owners.map((id) => `${id}: ${scopeOf(id)}`).join(' / '))}</dd></dl>${planGroups()}`;
-    acts = btn('later', '나중에', 'btn-ghost') + btn('plan-cancel', '취소') + btn('plan-confirm', '이대로 배정', 'btn-primary');
-  } else {
-    const r = it.r;
-    av = '<span class="avatar lg is-human" aria-hidden="true">로그인</span>';
-    title = `${r.label || r.name} 로그인 필요`;
-    sub = `${esc(r.name)} 실행기`;
-    body = `<p>[로그인 창 열기]를 누르면 이 컴퓨터에 새 콘솔 창이 뜨고 <code>claude auth login</code> 이 실행됩니다. 그 창과 브라우저에서 직접 로그인하세요.</p><p class="muted">이 화면은 비밀번호나 키를 받지 않습니다. 로그인이 끝나면 상태가 저절로 바뀝니다.</p>`;
-    acts = btn('later', '나중에', 'btn-ghost') + btn('login', '로그인 창 열기', 'btn-primary');
+    const budget = it.type === 'budget';
+    const open = sideUi.expanded.has(it.key);
+    const rejecting = sideUi.rejecting === it.key;
+    const hasDetail = a.details || a.commands?.length || a.files?.length || a.diff || a.rollback || a.taskId;
+    const allow = canApprove(a, sideUi.viewed.has(it.key));
+    const title = budget ? `예산 경고 — ${nameOf(a.from)}` : `${nameOf(a.from)} — ${ACTION[a.action] || a.action}`;
+    return `<li class="side-card t-${it.type}${fresh}" data-key="${esc(it.key)}">
+      <div class="sc-head">${avatar(a.from, 'sm')}<div class="sc-title"><b>${esc(title)}</b><small>${esc(rel(a.at))}${a.taskId ? ` · <span class="mono">${esc(a.taskId)}</span>` : ''}</small></div>
+        ${a.risk ? `<span class="risk r-${esc(a.risk)}">위험 ${RISK[a.risk]}</span>` : ''}</div>
+      <dl class="kv sc-kv"><dt>${budget ? '실행' : '하려는 일'}</dt><dd>${esc(a.text)}</dd><dt>${budget ? '사용량' : '이유'}</dt><dd>${esc(a.reason || '적지 않음')}</dd><dt>영향 범위</dt><dd class="mono">${esc(scopeOf(a.from, a.scope))}</dd></dl>
+      ${hasDetail && !budget ? `<button type="button" class="link more-link" data-act="detail" aria-expanded="${open}">${open ? '상세 접기' : '상세 보기'}${a.files?.length ? ` · 파일 ${a.files.length}` : ''}${a.diff ? ' · diff' : ''}</button>` : ''}
+      ${open ? detailBlock(a) : ''}
+      ${rejecting ? `<label class="reject-box"><span>거절 사유 (요청한 멤버에게 갑니다)</span><textarea class="input" data-note rows="2" maxlength="300" placeholder="예: 테스트 통과를 먼저 확인해 주세요"></textarea></label>` : ''}
+      <div class="sc-actions">${rejecting
+        ? btn('back', '돌아가기', 'btn-ghost') + btn('reject-send', '거절 보내기', 'btn-danger')
+        : btn('reject', '거절') + btn('approve', budget ? '승인(계속 실행)' : '승인', 'btn-primary', allow ? '' : ' disabled title="위험도가 높아 상세를 먼저 펼쳐 봐야 합니다"')}</div>
+      ${!allow ? '<p class="muted small">위험도 높음 — 상세를 펼쳐 본 뒤 승인할 수 있습니다</p>' : ''}
+    </li>`;
   }
-  $('#confirm-avatar').innerHTML = av;
-  $('#confirm-title').textContent = title;
-  $('#confirm-sub').innerHTML = sub;
-  const note = $('#reject-note')?.value;
-  $('#confirm-body').innerHTML = body;
-  if (note && $('#reject-note')) $('#reject-note').value = note;
-  $('#confirm-actions').innerHTML = acts;
+  if (it.type === 'plan') {
+    const owners = [...new Set(order.plan.map((p) => p.member))];
+    return `<li class="side-card t-plan${fresh}" data-key="${esc(it.key)}">
+      <div class="sc-head">${avatar('order', 'sm')}<div class="sc-title"><b>메인 오더 계획 — 배정 확인</b><small>작업 ${order.plan.length}개 · 아직 저장하지 않았습니다</small></div></div>
+      <dl class="kv sc-kv"><dt>지시</dt><dd>${esc(order.instruction)}</dd><dt>영향 범위</dt><dd class="mono">${esc(owners.map((id) => `${id}: ${scopeOf(id)}`).join(' / '))}</dd></dl>
+      <div class="sc-actions">${btn('plan-cancel', '취소') + btn('plan-confirm', '배정', 'btn-primary')}</div>
+    </li>`;
+  }
+  const r = it.r;
+  return `<li class="side-card t-login${fresh}" data-key="${esc(it.key)}">
+    <div class="sc-head"><span class="avatar sm is-human" aria-hidden="true">AI</span><div class="sc-title"><b>${esc(r.label || r.name)} 로그인 필요</b><small>${esc(r.name)} 실행기</small></div></div>
+    <p class="small">[로그인 창 열기]를 누르면 새 콘솔 창에서 <code>claude auth login</code> 이 실행됩니다. 그 창과 브라우저에서 직접 로그인하세요.</p>
+    <div class="sc-actions">${btn('login', '로그인 창 열기', 'btn-primary')}</div>
+  </li>`;
+}
+
+function renderSide(list = items()) {
+  $('#side-count').textContent = list.length ? `${list.length}건` : '';
+  side.classList.toggle('is-wide', [...sideUi.expanded].some((k) => list.some((i) => i.key === k)));
+  const box = $('#side-list');
+  const html = list.map(cardHtml).join('') || '<li class="empty">확인할 일이 없습니다</li>';
+  // 같은 내용이면 다시 그리지 않는다(읽던 상세의 스크롤·포커스 유지). 거절 사유를 쓰는 중이면 글과 포커스를 지킨다.
+  if (box.dataset.html === html) return;
+  box.dataset.html = html;
+  const ta0 = box.querySelector('[data-note]');
+  const note = ta0?.value;
+  const focused = ta0 && document.activeElement === ta0;
+  box.innerHTML = html;
+  const ta = box.querySelector('[data-note]');
+  if (ta && note) ta.value = note;
+  if (ta && focused) ta.focus();
   paintSprites();
 }
-function laterCurrent() {
-  ui.later.add(cf.key);
-  cf.rejecting = false;
-  const next = confirmItems().find((i) => !ui.later.has(i.key));
-  if (next) openConfirm(next.key);
-  else confirmDlg.close();
-}
-$('#confirm-actions').addEventListener('click', async (e) => {
-  const act = e.target.closest('[data-act]')?.dataset.act;
-  if (!act) return;
-  const it = confirmItems().find((i) => i.key === cf.key);
-  if (!it) return syncConfirm();
-  if (act === 'later') return laterCurrent();
-  if (act === 'reject' || act === 'back') {
-    cf.rejecting = act === 'reject';
-    renderConfirm(confirmItems());
-    return (confirmDlg.querySelector('#reject-note') || confirmDlg.querySelector('[data-act]'))?.focus();
+
+$('#side-list').addEventListener('click', async (e) => {
+  const goto = e.target.closest('[data-goto-task]');
+  if (goto) return gotoTask(goto.dataset.gotoTask);
+  const b = e.target.closest('[data-act]');
+  const card = e.target.closest('[data-key]');
+  if (!b || !card) return;
+  const it = items().find((i) => i.key === card.dataset.key);
+  if (!it) return syncSide();
+  const act = b.dataset.act;
+  if (act === 'detail') {
+    if (sideUi.expanded.has(it.key)) sideUi.expanded.delete(it.key);
+    else sideUi.expanded.add(it.key), sideUi.viewed.add(it.key);
+    return renderSide();
   }
-  e.target.closest('[data-act]').disabled = true;
-  if (act === 'approve') await decide(it.a.id, 'approved');
-  else if (act === 'reject-send') await decide(it.a.id, 'rejected', $('#reject-note')?.value || '');
+  if (act === 'reject' || act === 'back') {
+    sideUi.rejecting = act === 'reject' ? it.key : null;
+    renderSide();
+    return $('#side-list [data-note]')?.focus();
+  }
+  b.disabled = true;
+  if (act === 'approve') await decide(it.a, 'approved');
+  else if (act === 'reject-send') await decide(it.a, 'rejected', card.querySelector('[data-note]')?.value || '');
   else if (act === 'plan-confirm') await confirmPlan();
   else if (act === 'plan-cancel') cancelPlan();
-  else if (act === 'login') {
-    await openLogin(it.r.name);
-    return laterCurrent(); // 로그인은 창에서 하므로 모달은 다음으로 넘긴다
+  else if (act === 'login') await openLogin(it.r.name);
+  sideUi.rejecting = null;
+  syncSide();
+});
+$('#confirm-badge').addEventListener('click', () => setSide(!sideUi.open));
+$('#side-close').addEventListener('click', () => setSide(false));
+
+async function decide(a, decision, note = '') {
+  try {
+    await api('/api/approvals/decide', { project: ui.project, id: a.id, decision, note });
+    toast(decision === 'approved' ? '승인했습니다' : '거절했습니다');
+    // 오더 계획이 예산 확인을 기다리고 있었다면 승인 뒤 다시 보낸다
+    if (decision === 'approved' && a.action === 'budget' && a.from === 'order' && order.waitBudget) {
+      const text = order.waitBudget;
+      order.waitBudget = '';
+      submitOrder(text);
+    }
+  } catch (x) {
+    toast(x.message);
   }
-  cf.rejecting = false;
-  syncConfirm();
-});
-// Esc·바깥 클릭 = 나중에 (배지는 남는다)
-confirmDlg.addEventListener('cancel', (e) => {
-  e.preventDefault();
-  laterCurrent();
-});
-confirmDlg.addEventListener('click', (e) => {
-  if (e.target === confirmDlg) laterCurrent();
-});
-$('#confirm-badge').addEventListener('click', () => {
-  ui.later.clear();
-  openConfirm(confirmItems()[0]?.key);
-});
+  await load();
+}
+
+/** 작업 탭으로 가서 그 카드를 잠깐 강조한다. */
+function gotoTask(id) {
+  location.hash = '#tasks';
+  requestAnimationFrame(() => {
+    const el = document.querySelector(`[data-task="${CSS.escape(id)}"]`);
+    if (!el) return toast('작업을 찾지 못했습니다');
+    el.scrollIntoView({ block: 'center' });
+    el.classList.remove('is-fresh');
+    void el.offsetWidth;
+    el.classList.add('is-fresh');
+  });
+}
 
 // ── 이벤트 연결 ──
 function setView(v) {
@@ -1089,7 +1180,7 @@ function setView(v) {
 const netVisible = () => ui.tab === 'squad' && ui.view === 'network';
 
 // 상단 탭: 주소의 #squad / #tasks / #chat 으로 남긴다
-const TABS = ['squad', 'tasks', 'chat'];
+const TABS = ['squad', 'tasks', 'chat', 'report'];
 function setTab() {
   const t = location.hash.slice(1);
   ui.tab = TABS.includes(t) ? t : 'squad';
@@ -1102,6 +1193,7 @@ function setTab() {
     const box = $('#convo');
     box.scrollTop = box.scrollHeight;
   }
+  if (ui.tab === 'report') loadReports();
 }
 window.addEventListener('hashchange', setTab);
 
@@ -1120,7 +1212,7 @@ function renderPlan() {
   if (!order.plan) {
     box.hidden = true;
     box.innerHTML = '';
-    syncConfirm();
+    syncSide();
     return;
   }
   box.hidden = false;
@@ -1128,20 +1220,25 @@ function renderPlan() {
       <div class="plan-actions"><button type="button" class="btn btn-ghost" id="plan-cancel">취소</button><button type="button" class="btn btn-primary" id="plan-confirm">이대로 배정</button></div></div>
     ${planGroups()}`;
   paintSprites();
-  syncConfirm();
+  syncSide();
 }
 function setOrderBusy(busy, label) {
   order.busy = busy;
   $('#order-submit').disabled = busy;
   $('#order-text').disabled = busy;
-  $('#order-submit').textContent = busy ? label : '계획 만들기';
+  $('#order-submit').textContent = busy ? label : $('#order-to').value === 'desktop' ? '보내기' : '계획 만들기';
 }
-$('#order-form').addEventListener('submit', async (e) => {
+$('#order-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const text = $('#order-text').value.trim();
   const err = $('#order-error');
   err.textContent = '';
   if (!text) return (err.textContent = '지시를 입력하세요');
+  if ($('#order-to').value === 'desktop') return sendDesktop(text);
+  submitOrder(text);
+});
+async function submitOrder(text) {
+  const err = $('#order-error');
   if (order.busy) return;
   setOrderBusy(true, '계획 만드는 중');
   order.plan = null;
@@ -1153,9 +1250,30 @@ $('#order-form').addEventListener('submit', async (e) => {
     renderPlan();
   } catch (x) {
     err.textContent = x.message;
+    // 예산 80% 를 넘었다: 확인 패널의 예산 카드를 승인하면 이 지시를 다시 보낸다
+    if (x.data?.budget === 'warn') {
+      order.waitBudget = text;
+      load();
+    }
   } finally {
     setOrderBusy(false);
   }
+}
+async function sendDesktop(text) {
+  try {
+    const r = await api('/api/inbox', { project: ui.project, text });
+    $('#order-text').value = '';
+    toast(`데스크톱 세션 inbox 에 넣었습니다 (${r.id})`);
+    load();
+  } catch (x) {
+    $('#order-error').textContent = x.message;
+  }
+}
+$('#order-to').addEventListener('change', () => {
+  const desk = $('#order-to').value === 'desktop';
+  store('squad.orderTo', desk ? 'desktop' : 'main');
+  $('#order-submit').textContent = desk ? '보내기' : '계획 만들기';
+  $('#order-text').placeholder = desk ? '예: 결과지 A4 여백을 이 세션에서 바로 손봐 줘 (squad inbox --take 로 가져갑니다)' : '예: 메인 페이지 SEO 문구를 점검하고 검진기관 안내를 보강해 줘';
 });
 function cancelPlan() {
   order.plan = null;
@@ -1199,7 +1317,9 @@ $('#project-select').addEventListener('change', (e) => {
   ui.project = e.target.value;
   store('squad.project', ui.project);
   ui.seenMsgs = null;
+  sideUi.seen = new Set();
   closeModal();
+  if (ui.tab === 'report') loadReports();
   connect();
   load();
 });
@@ -1292,8 +1412,56 @@ setInterval(() => {
   if (netVisible()) net.kick();
 }, 500);
 
+// ── 보고 탭 ──
+const report = { dates: [], date: '' };
+async function loadReports() {
+  if (!ui.project) return; // 시작할 때는 프로젝트를 고른 뒤 다시 부른다
+  try {
+    const r = await api(`/api/reports?project=${encodeURIComponent(ui.project)}`);
+    report.dates = r.dates;
+    report.today = r.today;
+    if (!report.dates.includes(report.date)) report.date = report.dates[0] || '';
+    $('#report-date').innerHTML = report.dates.map((x) => `<option value="${x}"${x === report.date ? ' selected' : ''}>${x}${x === r.today ? ' (오늘)' : ''}</option>`).join('') || '<option value="">보고 없음</option>';
+    await showReport();
+  } catch (x) {
+    toast(x.message);
+  }
+}
+async function showReport() {
+  const box = $('#report-body');
+  if (!report.date) return (box.innerHTML = '<p class="empty">아직 보고가 없습니다 — [오늘 보고 만들기]나 <code>squad report</code> 로 만드세요</p>');
+  try {
+    const r = await api(`/api/report?project=${encodeURIComponent(ui.project)}&date=${report.date}`);
+    box.innerHTML = mdToHtml(r.markdown);
+  } catch (x) {
+    box.innerHTML = `<p class="empty">${esc(x.message)}</p>`;
+  }
+}
+$('#report-date').addEventListener('change', (e) => {
+  report.date = e.target.value;
+  showReport();
+});
+$('#report-make').addEventListener('click', async (e) => {
+  e.target.disabled = true;
+  try {
+    const r = await api('/api/report', { project: ui.project });
+    report.date = r.date;
+    toast(`${r.date} 보고를 만들었습니다`);
+    await loadReports();
+  } catch (x) {
+    toast(x.message);
+  } finally {
+    e.target.disabled = false;
+  }
+});
+
 // ── 시작 ──
 (async () => {
+  setSide(sideUi.open);
+  if (store('squad.orderTo') === 'desktop') {
+    $('#order-to').value = 'desktop';
+    $('#order-to').dispatchEvent(new Event('change'));
+  }
   setTab();
   setView(store('squad.view') === 'monitor' ? 'monitor' : 'network');
   try {
@@ -1306,6 +1474,7 @@ setInterval(() => {
     connect();
     await load();
     loadRunners();
+    if (ui.tab === 'report') loadReports();
   } catch (e) {
     toast(e.message);
   }

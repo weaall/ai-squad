@@ -1,6 +1,6 @@
 {
   "name": "ai-squad",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "AI 에이전트를 파트별 직원처럼 나눠 맡기고 한 화면에서 지켜보는 코워커 관리 시스템",
   "type": "module",
   "private": true,

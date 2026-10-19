@@ -12,7 +12,11 @@ import {
 import { setSection } from '../lib/md.mjs';
 import { STATUS_LABEL, buildState, describeEvent, tokenTotal } from '../lib/state.mjs';
 import { validateMessage, validateTask } from '../lib/validate.mjs';
-import { planOrder, runMember, runOrder, saveOrder } from '../lib/runner.mjs';
+import { askMainAi, budgetGate, planOrder, runMember, runOrder, runQueue, runReview, saveOrder } from '../lib/runner.mjs';
+import { waitDecision } from '../lib/approvals.mjs';
+import { addInbox, doneInbox, INBOX_LABEL, loadInbox, takeInbox } from '../lib/inbox.mjs';
+import { buildReport, dateKey, isDateKey, polishPrompt } from '../lib/report.mjs';
+import { capture, captureName } from '../lib/capture.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { runnerStatuses, LOGIN_COMMAND } from '../lib/runners/index.mjs';
 import { setSecret, secretsFile } from '../lib/secrets.mjs';
@@ -30,6 +34,7 @@ const HELP = `AI Squad CLI
                                            --dry: 계획만 / --auto: 승인 뒤 배정하고, 한 번 더 승인하면 순서대로 실행
   run <project> <member> [taskId] [--headroom]    멤버에게 작업 실행 (MEMBER.md 의 runner)
   approve request <project> <from> <push|deploy|migrate|send|delete> "<무엇을>" [--reason 이유] [--scope 저장소·경로] [--task T-..]
+                [--details-file 설명.md] [--diff-file 변경.sql|.diff] [--files a,b] [--cmd "명령"]... [--risk 낮음|보통|높음] [--rollback "되돌리는 방법"]
   approve list <project>                   승인 대기 목록 (approve 명령은 --demo 면 시연 파일에)
   approve yes|no <project> <approvalId> [--reason 사유]   승인·거절 (요청한 멤버에게 answer 메시지)
   auth status                              runner 별 연결 상태
@@ -38,10 +43,22 @@ const HELP = `AI Squad CLI
   auth login                               claude 로그인 (claude auth login)
   msg <project> <from> <to> "<내용>" [--kind note] [--task T-..]
   log <project> <member> "<내용>" [--status working|idle|blocked]
-  task add <project> <member> "<제목>" [--detail 내용]
+  task add <project> <member> "<제목>" [--detail 내용] [--after T-a,T-b]   (--after: 먼저 끝나야 하는 작업)
   task done <project> <taskId> [--summary 요약]
   task block <project> <taskId> [--reason 이유]
-  board [--port 4777] [--demo]             보드 서버 (--demo: 시연 데이터 파일로)`;
+  run-queue <project> [--max 2]            의존이 풀린 todo·검수 대기를 골라 담당 경로가 겹치지 않는 멤버끼리 동시에 실행
+  review <project> <taskId>                검수 대기(review) 작업을 검수 멤버가 통과/반려
+  report <project> [--date YYYY-MM-DD] [--ai] [--demo]
+                                           일일 보고 → <project>/.squad/reports/<날짜>.md (--ai: 메인 AI 로 문장 다듬기)
+  capture <project> <url> [--member id] [--task T-..] [--width 1440] [--height 900] [--demo]
+                                           Chrome/Edge headless 로 화면을 찍어 data/captures/ 에 두고 작업·메시지에 첨부
+  inbox <project> [--take] [--demo]        데스크톱 세션용 지시 목록 / 가장 오래된 대기 지시를 가져오기(처리 중으로)
+  inbox add <project> "<지시>"             지시 넣기 (보드 명령 창의 "데스크톱 Claude 세션"과 같다)
+  inbox done <id> "<결과>" [--project p]   처리 끝 표시
+  board [--port 4777] [--demo]             보드 서버 (--demo: 시연 데이터 파일로)
+
+  run·order·run-queue·review·report --ai 는 실행 전에 오늘 토큰 예산(squad.config.json budget)을 본다.
+  80% 를 넘으면 승인 대기(budget)를 남기고 결정을 기다리고, 100% 를 넘으면 실행하지 않는다.`;
 
 function fail(msg) {
   console.error(`오류: ${msg}`);
@@ -80,6 +97,30 @@ function setCurrent(paths, member, text) {
   if (!fs.existsSync(file)) return;
   fs.writeFileSync(file, setSection(fs.readFileSync(file, 'utf8'), '지금 작업', text), 'utf8');
 }
+
+/**
+ * 실행 전 예산 확인. → true(실행) | false(거절·시간 초과) | 'over'(100% 넘음)
+ * 80% 를 넘으면 승인 대기(budget)를 남기고 보드의 확인 패널이나 `approve yes` 결정을 기다린다.
+ */
+async function gate(paths, members, subject, what, taskId) {
+  const g = budgetGate({ root: ROOT, paths, members, subject, what, taskId });
+  if (g.ok) return true;
+  if (g.level === 'over') {
+    console.log(`예산 초과: ${g.check.reason} — 실행하지 않습니다. squad.config.json 의 budget 을 올리거나 내일 다시 하세요`);
+    return 'over';
+  }
+  console.log(`예산 경고: ${g.check.reason}\n승인 대기 ${g.approval.id} — 보드의 확인 패널이나 \`node bin/squad.mjs approve yes ${paths.id} ${g.approval.id}\` 로 결정하세요. 기다립니다(최대 10분)`);
+  const d = await waitDecision(paths, g.approval.id);
+  if (d === 'approved') return true;
+  console.log(d === 'rejected' ? '예산 확인이 거절돼 실행하지 않습니다' : '결정이 없어 실행하지 않습니다');
+  return false;
+}
+
+const localTime = (at) => {
+  const d = new Date(at);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
 
 // ── 화면 너비(한글 2칸)에 맞춘 표 ──
 const width = (s) => [...s].reduce((n, c) => n + (/[ᄀ-ᅟ⺀-꓏가-힣豈-﫿＀-｠]/.test(c) ? 2 : 1), 0);
@@ -204,6 +245,7 @@ const commands = {
   async order([projectId, instruction], o) {
     if (!instruction) fail('사용법: order <project> "<지시>" [--dry] [--auto]');
     const { paths, members } = ctx(projectId);
+    if ((await gate(paths, members, 'order', `계획 · ${instruction.slice(0, 80)}`)) !== true) return void (process.exitCode = 1);
     let r;
     try {
       r = await planOrder({ root: ROOT, paths, members, instruction, headroom: Boolean(o.headroom), stderr: 'inherit' });
@@ -236,8 +278,13 @@ const commands = {
         console.log(`건너뜀: ${m.name} — runner=external 이라 사람이 넘겨 주세요`);
         continue;
       }
-      const res = await runMember({ root: ROOT, paths, member: m, task: t, headroom: Boolean(o.headroom) });
-      console.log(res.ok ? `완료: ${res.summary}` : `막힘: ${res.summary}`);
+      const g = await gate(paths, members, m.id, `실행 · ${t.title}`, t.id);
+      if (g !== true) {
+        process.exitCode = 1;
+        return console.log('예산 확인을 넘지 못해 뒤 순서는 멈췄습니다');
+      }
+      const res = await runMember({ root: ROOT, paths, member: m, task: t, members, headroom: Boolean(o.headroom) });
+      console.log(res.ok ? `${res.status === 'review' ? '검수 대기' : '완료'}: ${res.summary}` : `막힘: ${res.summary}`);
       if (!res.ok) {
         process.exitCode = 1;
         return console.log('막힌 작업이 있어 뒤 순서는 멈췄습니다');
@@ -252,22 +299,170 @@ const commands = {
     if (m.runner === 'external') fail(`${m.name}: runner=external 이라 CLI 가 실행하지 않습니다`);
     if (!loadConfig(ROOT).runners[m.runner]) fail(`${m.name}: runner=${m.runner} 가 squad.config.json 의 runners 에 없습니다`);
     const tasks = readJsonl(paths.tasks);
+    // 할 일이 없고 이 멤버가 검수할 작업이 있으면 검수를 한다
+    const reviewing = !taskId && !tasks.some((t) => t.member === m.id && t.status === 'todo') && tasks.find((t) => t.status === 'review' && t.reviewer === m.id);
+    if (reviewing) return commands.review([projectId, reviewing.id], o);
     const task = taskId ? tasks.find((t) => t.id === taskId) : tasks.find((t) => t.member === m.id && t.status === 'todo');
     if (!task) fail(taskId ? `작업이 없습니다: ${taskId}` : `${m.name}: 할 일(todo) 작업이 없습니다`);
-    const res = await runMember({ root: ROOT, paths, member: m, task, headroom: Boolean(o.headroom) });
+    const wait = (task.dependsOn || []).filter((id) => tasks.find((t) => t.id === id && t.status !== 'done'));
+    if (wait.length) fail(`선행 작업이 아직 끝나지 않았습니다: ${wait.join(', ')}`);
+    if ((await gate(paths, members, m.id, `실행 · ${task.title}`, task.id)) !== true) return void (process.exitCode = 1);
+    const res = await runMember({ root: ROOT, paths, member: m, task, members, headroom: Boolean(o.headroom) });
     if (res.outside.length) console.log(`경고: 맡은 경로 밖 수정 ${res.outside.length}건 — 작업을 막힘으로 바꾸고 메인 오더에게 알렸습니다`);
-    console.log(res.ok ? `완료: ${res.summary}` : `막힘: ${res.summary}`);
+    console.log(res.ok ? `${res.status === 'review' ? '검수 대기' : '완료'}: ${res.summary}` : `막힘: ${res.summary}`);
     if (!res.ok) process.exitCode = 1;
+  },
+
+  async 'run-queue'([projectId], o) {
+    const { paths, members } = ctx(projectId);
+    const max = Number(o.max || 2);
+    if (!Number.isInteger(max) || max < 1 || max > 8) fail('--max 는 1~8');
+    console.log(`대기열 실행 — 동시에 ${max}개까지`);
+    const r = await runQueue({
+      root: ROOT, paths, max, headroom: Boolean(o.headroom),
+      loadMembers: () => loadMembers(paths),
+      gate: (subject, what, taskId) => gate(paths, members, subject, what, taskId),
+    });
+    console.log(`끝: 실행 ${r.ran}건 · 막힘 ${r.blocked}건${r.stoppedBy ? ` · ${r.stoppedBy}로 멈춤` : ''}`);
+    if (r.blocked || r.stoppedBy) process.exitCode = 1;
+  },
+
+  async review([projectId, taskId]) {
+    const { paths, members } = ctx(projectId);
+    const task = readJsonl(paths.tasks).find((t) => t.id === taskId);
+    if (!task) fail(`작업이 없습니다: ${taskId}`);
+    if (task.status !== 'review') fail(`검수 대기(review) 작업이 아닙니다: ${task.status}`);
+    const rid = task.reviewer || loadConfig(ROOT).review.default;
+    if ((await gate(paths, members, rid, `검수 · ${task.title}`, task.id)) !== true) return void (process.exitCode = 1);
+    try {
+      const v = await runReview({ root: ROOT, paths, members, task });
+      console.log(v.pass ? `통과: ${v.note}` : `반려: ${v.note} — 담당 멤버에게 인계하고 할 일로 되돌렸습니다`);
+    } catch (e) {
+      fail(e.message);
+    }
+  },
+
+  async report([projectId], o) {
+    const { paths, members } = ctx(projectId, { demo: Boolean(o.demo) });
+    const date = o.date || dateKey(Date.now());
+    if (!isDateKey(date)) fail('--date 는 YYYY-MM-DD');
+    const config = loadConfig(ROOT);
+    const r = buildReport({
+      project: paths, date, members, tasks: readJsonl(paths.tasks), messages: readJsonl(paths.messages),
+      approvals: loadApprovals(paths), events: readJsonl(paths.events).filter((e) => e.project === paths.id), budget: config.budget,
+    });
+    let md = r.markdown;
+    if (o.ai) {
+      if ((await gate(paths, members, 'order', `보고 다듬기 · ${date}`)) === true) {
+        try {
+          const a = await askMainAi({ root: ROOT, paths, prompt: polishPrompt(md), stderr: 'inherit' });
+          if (a.text.trim()) md = a.text.trim() + '\n';
+          emit(paths, 'order', { type: 'plan', text: `보고 다듬기 ${date}`, ...(a.usage ? { usage: a.usage } : {}) });
+        } catch (e) {
+          console.log(`다듬기 실패, 규칙 기반 보고를 씁니다: ${e.message}`);
+        }
+      } else console.log('예산 확인을 넘지 못해 규칙 기반 보고를 씁니다');
+    }
+    const file = path.join(paths.reports, `${date}.md`);
+    fs.mkdirSync(paths.reports, { recursive: true });
+    fs.writeFileSync(file, md, 'utf8');
+    console.log(`보고: ${file}  (한 일 ${r.counts.done} · 막힌 일 ${r.counts.blocked} · 내일 ${r.counts.next} · ${r.counts.tokens.toLocaleString('ko-KR')}토큰)`);
+    if (config.report.copyTo) {
+      try {
+        const to = path.join(config.report.copyTo, `${paths.id}-${date}.md`);
+        fs.mkdirSync(config.report.copyTo, { recursive: true });
+        fs.copyFileSync(file, to);
+        console.log(`복사: ${to}`);
+      } catch (e) {
+        console.log(`복사하지 못했습니다(report.copyTo): ${e.message}`);
+      }
+    }
+  },
+
+  async capture([projectId, url], o) {
+    const { paths, members } = ctx(projectId, { demo: Boolean(o.demo) });
+    if (!url) fail('사용법: capture <project> <url> [--member id] [--task T-..]');
+    const who = o.member || 'human';
+    if (who !== 'human' && !members.some((m) => m.id === who)) fail(`멤버가 없습니다: ${who}`);
+    const tasks = readJsonl(paths.tasks);
+    if (o.task && !tasks.some((t) => t.id === o.task)) fail(`작업이 없습니다: ${o.task}`);
+    const width = Number(o.width || 1440), height = Number(o.height || 900);
+    if (![width, height].every((n) => Number.isInteger(n) && n >= 320 && n <= 3840)) fail('--width·--height 는 320~3840');
+    let name = captureName(paths.id, who);
+    for (let i = 2; fs.existsSync(path.join(paths.captures, name)); i++) name = name.replace(/(-\d+)?\.png$/, `-${i}.png`);
+    let r;
+    try {
+      r = await capture({ url, file: path.join(paths.captures, name), width, height });
+    } catch (e) {
+      fail(e.message);
+    }
+    const at = now();
+    const att = { type: 'capture', name, width, height, at };
+    if (o.task) {
+      const t = tasks.find((x) => x.id === o.task);
+      updateTask(paths.tasks, o.task, { attachments: [...(t.attachments || []), att].slice(-10) });
+    }
+    const safeUrl = url.replace(/([?&])t=[^&#]*/g, '$1t=…'); // 보드 접속 토큰은 남기지 않는다
+    const v = validateMessage({ from: who, to: 'order', kind: 'note', taskId: o.task, text: `화면 캡처 ${width}×${height}: ${safeUrl}`.slice(0, 2000) }, members.map((m) => m.id));
+    if (!v.error) appendJsonl(paths.messages, { id: newId('M'), at, ...v, attachments: [att] });
+    console.log(`캡처: ${r.file} (${Math.round(r.bytes / 1024)}KB)${o.task ? ` → ${o.task} 에 첨부` : ''}`);
+  },
+
+  inbox([a, b, c], o) {
+    if (a === 'done') {
+      const ids = o.project ? [o.project] : Object.keys(loadProjects(ROOT));
+      for (const id of ids) {
+        const { paths } = ctx(id, { demo: Boolean(o.demo) });
+        if (!loadInbox(paths).some((i) => i.id === b)) continue;
+        try {
+          doneInbox(paths, b, c || '');
+        } catch (e) {
+          fail(e.message);
+        }
+        return console.log(`${b} → 끝`);
+      }
+      fail(`inbox 지시가 없습니다: ${b}`);
+    }
+    if (a === 'add') {
+      const { paths } = ctx(b, { demo: Boolean(o.demo) });
+      try {
+        return console.log(`inbox ${addInbox(paths, c).id}`);
+      } catch (e) {
+        fail(e.message);
+      }
+    }
+    const { paths } = ctx(a, { demo: Boolean(o.demo) });
+    if (o.take) {
+      const it = takeInbox(paths);
+      if (!it) return console.log('대기 중인 지시가 없습니다');
+      return console.log(`${it.id} (처리 중으로 바꿈)\n${it.text}\n\n끝나면: node bin/squad.mjs inbox done ${it.id} "<결과>"`);
+    }
+    const list = loadInbox(paths).filter((i) => i.status !== 'done');
+    if (!list.length) return console.log('대기·처리 중인 지시가 없습니다');
+    console.log(table([['id', '상태', '받은 때', '지시'], ...list.map((i) => [i.id, INBOX_LABEL[i.status], localTime(i.at), cut(i.text, 50)])]));
   },
 
   approve([sub, projectId, a, b, c], o) {
     const { paths, members } = ctx(projectId, { demo: Boolean(o.demo) }); // --demo: 시연 파일에만
     if (sub === 'request') {
-      const v = validateApprovalRequest({ from: a, action: b, text: c, reason: o.reason, scope: o.scope, taskId: o.task }, members.map((m) => m.id));
+      const readOpt = (f, label) => {
+        if (!f) return undefined;
+        try {
+          return fs.readFileSync(path.resolve(f), 'utf8');
+        } catch {
+          fail(`${label} 파일을 읽지 못했습니다: ${f}`);
+        }
+      };
+      const v = validateApprovalRequest({
+        from: a, action: b, text: c, reason: o.reason, scope: o.scope, taskId: o.task,
+        details: readOpt(o['details-file'], '상세') ?? o.details, diff: readOpt(o['diff-file'], 'diff'),
+        files: o.files ? o.files.split(',').map((x) => x.trim()).filter(Boolean) : undefined,
+        commands: o.cmd?.length ? o.cmd : undefined, risk: o.risk, rollback: o.rollback,
+      }, members.map((m) => m.id));
       if (v.error) fail(v.error);
       const r = requestApproval(paths, v);
       emit(paths, v.from, { type: 'log', status: 'blocked', text: `승인 대기 · ${ACTIONS[v.action]}` });
-      return console.log(`승인 요청 ${r.id} — 보드의 "승인 대기"나 approve yes|no 로 결정합니다. 결정 전에는 그 행위를 하지 마세요`);
+      return console.log(`승인 요청 ${r.id} — 보드의 확인 패널이나 approve yes|no 로 결정합니다. 결정 전에는 그 행위를 하지 마세요`);
     }
     if (sub === 'list') {
       const list = loadApprovals(paths).filter((x) => x.status === 'pending');
@@ -335,7 +530,7 @@ const commands = {
   task([sub, projectId, a, b], o) {
     const { paths, members } = ctx(projectId);
     if (sub === 'add') {
-      const t = addTask(paths, members, { member: a, title: b, detail: o.detail });
+      const t = addTask(paths, members, { member: a, title: b, detail: o.detail, ...(o.after ? { dependsOn: o.after.split(',').map((x) => x.trim()).filter(Boolean) } : {}) });
       return console.log(`작업 ${t.id}`);
     }
     if (sub === 'done' || sub === 'block') {
@@ -362,6 +557,10 @@ const { values, positionals } = parseArgs({
     dry: { type: 'boolean' }, headroom: { type: 'boolean' }, demo: { type: 'boolean' }, port: { type: 'string' }, kind: { type: 'string' },
     task: { type: 'string' }, status: { type: 'string' }, detail: { type: 'string' }, summary: { type: 'string' },
     reason: { type: 'string' }, name: { type: 'string' }, auto: { type: 'boolean' }, scope: { type: 'string' },
+    max: { type: 'string' }, date: { type: 'string' }, ai: { type: 'boolean' }, member: { type: 'string' }, width: { type: 'string' },
+    height: { type: 'string' }, take: { type: 'boolean' }, project: { type: 'string' }, after: { type: 'string' },
+    'details-file': { type: 'string' }, details: { type: 'string' }, 'diff-file': { type: 'string' }, files: { type: 'string' },
+    cmd: { type: 'string', multiple: true }, risk: { type: 'string' }, rollback: { type: 'string' },
   },
 });
 const [cmd = 'help', ...rest] = positionals;
