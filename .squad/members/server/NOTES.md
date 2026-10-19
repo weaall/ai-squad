@@ -1,4 +1,11 @@
 ## 인계 메모
+
+- done/cancel 시 멤버의 마지막 이벤트가 start면 end 이벤트(상태 그대로, 텍스트 '사람이 정리') 기록 (server/index.mjs 370-390, lib/blocked.mjs는 순수 함수로 유지).
+- start 후 30분 이상 이벤트 없으면 'unresponsive' 상태로 표시 (memberStatus now/limitMs 추가, buildState에서 호출).
+- 막혀 있던 상태 표시 기능 완성: done/cancel/block 시 멤버 상태 자동 업데이트.
+- worktree: projects.json worktree:true → paths.worktree → runMember 가 createWorktree dir 에서 실행·diffStat, 끝나면 finishWorktree(conflict·dirty 면 blocked '병합 충돌', worktree 남김). 분리된 HEAD 면 원래 트리. 커밋 eced6ad.
+- finishWorktree dirty 판정은 정션(.squad·node_modules) 제외 — 안 그러면 tasks·messages.jsonl 때문에 늘 dirty. 멤버가 커밋 안 하면 dirty 로 막힌다.
+- projects.json(ai-squad true·qugo false)·.gitignore .squad-worktrees/ 는 owns 밖이라 order 에 handoff(M-mvex7dag-6a32). 이 둘 전엔 worktree 꺼져 있음.
 - 승인 결정 뒤 이어 실행: lib/approvals.mjs resumePatch(순수)·resumeAfterDecision — taskId 작업을 todo + detail '[승인됨] 행위 — 내용 · 명령: ..'(거절은 '[거절됨] .. 사유 — 대안') + task.allow, 멤버 log idle 이벤트. /api/approvals/decide 가 부르고 바뀌면 응답에 queue(startQueue). budget·doing·cancelled 는 안 건드림.
 - task.allow 는 runMember 가 시작 때 읽고 지움 → claude exec({allow}) → allowRules 가 safeTools 를 거치지 않고 정확한 `Bash(<명령>)` 만 더함(* ( ) , 줄바꿈 섞이면 뺌). 실행 규칙에 [승인됨] 절 한 줄.
 - CLI approve yes|no 에서 resumeAfterDecision 호출은 runner 인계 T-mvex229s-ecf0(bin 은 runner 소유).
@@ -20,3 +27,4 @@
 - headroom: config headroom.default(기본 true) + store.resolveHeadroom — MEMBER.md 'false' 만 끈다. loadMembers 의 m.headroom 이 실효값(paths.root 로 config 읽음), /api/state·toggle 응답에 그대로.
 - 자동 배정: /api/order 는 planNeedsConfirm 결과(needsConfirm·reasons)를 같이 준다. 확인 불필요면 saveOrder + startQueue(백그라운드 runQueue, 프로젝트당 1개) → 응답 tasks·queue('started'|'running'|'off'). /api/order/confirm 도 저장 뒤 대기열 시작. 끝/실패는 events type 'queue'.
 - startBoard queue 옵션: planner 가짜면 기본 null(시험에서 멤버 실제 실행 안 함). 멤버 프롬프트에 모호하면 `squad ask ... form` 안내 줄 추가.
+- 비용 줄이기: /api/order 도 fastPlan 먼저(plan 이벤트 '빠른 길 → 멤버'). mainAi 기본 claude-sonnet-5-5, planOrder 는 실패·빈 계획이면 Opus(PLAN_RETRY_MODEL) 1회. saveOrder({orderId}) → tasks.orderId·plan 이벤트 orderId, state.orders[orderId]={plan,work,total}. CLI·화면 표시는 runner·ui 인계.
