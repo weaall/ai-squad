@@ -50,7 +50,7 @@ const HELP = `AI Squad CLI
   order <project> "<지시>" [--dry] [--auto] [--headroom]
                                            메인 AI(squad.config.json mainAi)가 계획·실행 순서를 만들고, 사람이 승인하면 배정
                                            --dry: 계획만 / --auto: 승인 뒤 배정하고, 한 번 더 승인하면 순서대로 실행
-  run <project> <member> [taskId] [--headroom] [--retry]    멤버에게 작업 실행 (MEMBER.md 의 runner). --retry: 실패 시 1회 재시도(시간 초과·잠금 충돌 제외)
+  run <project> <member> [taskId] [--headroom] [--retry] [--runner antigravity]    멤버에게 작업 실행 (MEMBER.md 의 runner, --runner 로 덮어쓰기). --retry: 실패 시 1회 재시도(시간 초과·잠금 충돌 제외)
   approve request <project> <from> <push|deploy|migrate|send|delete> "<무엇을>" [--reason 이유] [--scope 저장소·경로] [--task T-..]
                 [--details-file 설명.md] [--diff-file 변경.sql|.diff] [--files a,b] [--cmd "명령"]... [--risk 낮음|보통|높음] [--rollback "되돌리는 방법"]
   ask <project> <from> preview|choice|form "<제목>" --task T-.. [--text 설명]
@@ -69,7 +69,7 @@ const HELP = `AI Squad CLI
                                            --kind question: 받는 멤버에게 답변 작업(easy)을 만들고 run-queue 를 백그라운드로
                                            --kind answer --task T: T 가 답을 기다리면(입력 대기·막힘) 다시 todo
   log <project> <member> "<내용>" [--status working|idle|blocked]
-  task add <project> <member> "<제목>" [--detail 내용] [--after T-a,T-b]   (--after: 먼저 끝나야 하는 작업)
+  task add <project> <member> "<제목>" [--detail 내용] [--after T-a,T-b] [--difficulty easy|normal|hard] [--status blocked]   (--after: 먼저 끝나야 하는 작업, --status blocked: 대기열이 집지 않게)
   task done <project> <taskId> [--summary 요약]
   task block <project> <taskId> [--reason 이유]
   run-queue <project> [--max 2] [--retry]          의존이 풀린 todo·검수 대기를 골라 담당 경로가 겹치지 않는 멤버끼리 동시에 실행
@@ -446,8 +446,9 @@ const commands = {
 
   async run([projectId, memberId, taskId], o) {
     const { paths, members } = ctx(projectId);
-    const m = members.find((x) => x.id === memberId);
-    if (!m) fail(`멤버가 없습니다: ${memberId}`);
+    const found = members.find((x) => x.id === memberId);
+    if (!found) fail(`멤버가 없습니다: ${memberId}`);
+    const m = typeof o.runner === 'string' ? { ...found, runner: o.runner } : found;
     if (m.runner === 'external') fail(`${m.name}: runner=external 이라 CLI 가 실행하지 않습니다`);
     try { getRunner(loadConfig(ROOT), m.runner); } catch { fail(`${m.name}: runner=${m.runner} 가 squad.config.json 의 runners 에 없습니다`); }
     const tasks = readJsonl(paths.tasks);
@@ -753,7 +754,7 @@ const commands = {
   task([sub, projectId, a, b], o) {
     const { paths, members } = ctx(projectId);
     if (sub === 'add') {
-      const t = addTask(paths, members, { member: a, title: b, detail: o.detail, ...(o.after ? { dependsOn: o.after.split(',').map((x) => x.trim()).filter(Boolean) } : {}) });
+      const t = addTask(paths, members, { member: a, title: b, detail: o.detail, status: o.status, difficulty: o.difficulty, ...(o.after ? { dependsOn: o.after.split(',').map((x) => x.trim()).filter(Boolean) } : {}) });
       wake(paths);
       return console.log(`작업 ${t.id}`);
     }
@@ -788,7 +789,7 @@ const { values, positionals } = parseArgs({
     'details-file': { type: 'string' }, details: { type: 'string' }, 'diff-file': { type: 'string' }, files: { type: 'string' },
     cmd: { type: 'string', multiple: true }, risk: { type: 'string' }, rollback: { type: 'string' },
     text: { type: 'string' }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' }, 'body-file': { type: 'string' },
-    option: { type: 'string', multiple: true }, 'squad-dir': { type: 'string' }, local: { type: 'boolean' }, yes: { type: 'boolean' }, json: { type: 'boolean' }, field: { type: 'string', multiple: true },
+    option: { type: 'string', multiple: true }, 'squad-dir': { type: 'string' }, local: { type: 'boolean' }, yes: { type: 'boolean' }, json: { type: 'boolean' }, runner: { type: 'string' }, difficulty: { type: 'string' }, field: { type: 'string', multiple: true },
   },
 });
 const [cmd = 'help', ...rest] = positionals;
