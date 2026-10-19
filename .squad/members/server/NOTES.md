@@ -1,4 +1,5 @@
 ## 인계 메모
+- 경로 밖 확인 필요: runMember 가 git 에만 보인 owns 밖 변경을 lib/runners/edits.mjs gitOnlyOf 로 [{path, member}](같이 돈 멤버 몫 표시, 그 멤버 .squad 기록은 뺌) → 요약 + events type 'outside-warn'. concurrentOwns 는 이제 [{id, owns}]. ui 인계 보냄.
 - 막힘 단추: POST /api/task/:id/(retry|reassign|done|cancel) → lib/blocked.mjs blockedAction(patch·message·wake). retry·reassign 은 todo + startQueue, 응답 {task, queue}. reassign 대상은 body.to ?? body.member(화면은 member).
 - TASK_STATUSES 에 'cancelled' 추가(의존 작업은 done 이 아니라 계속 대기). 칸반 표시는 ui 인계 T-mveva74d-5ef8.
 - runner 라우팅: runMember 가 routeTask(작업 runner·model → paths.runners 에 antigravity 면 난이도·종류·5시간 사용률 → MEMBER.md) + routedRunner. projects.json runners 없으면 ['claude']. agy 실패·빈 답·도구 거부면 claude 1회 대체, events type 'fallback'.
