@@ -1,4 +1,6 @@
 ## 인계 메모
+- 막힘 단추: POST /api/task/:id/(retry|reassign|done|cancel) → lib/blocked.mjs blockedAction(patch·message·wake). retry·reassign 은 todo + startQueue, 응답 {task, queue}. reassign 대상은 body.to ?? body.member(화면은 member).
+- TASK_STATUSES 에 'cancelled' 추가(의존 작업은 done 이 아니라 계속 대기). 칸반 표시는 ui 인계 T-mveva74d-5ef8.
 - runner 라우팅: runMember 가 routeTask(작업 runner·model → paths.runners 에 antigravity 면 난이도·종류·5시간 사용률 → MEMBER.md) + routedRunner. projects.json runners 없으면 ['claude']. agy 실패·빈 답·도구 거부면 claude 1회 대체, events type 'fallback'.
 - usage.byRunner{today,week}·week.days[].byRunner(usage.runner 없으면 claude). 대체 전 agy 가 쓴 토큰은 이벤트에 안 남음(필요하면 fallback 이벤트에 usage 추가). ui 인계 M-mvev37zx-3d61.
 - 정적 파일: server/index.mjs TYPES 에 있는 확장자만 준다(html·js·css·svg·png·ico·webp). 토큰 검사는 /api/ 만 — /brand/* 는 공개. 새 확장자 필요하면 TYPES 에 추가.

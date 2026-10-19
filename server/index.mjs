@@ -20,6 +20,7 @@ import { CAPTURE_RE } from '../lib/capture.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { LOGIN_COMMAND, runnerStatuses } from '../lib/runners/index.mjs';
 import { decideApproval, decisionText, loadApprovals } from '../lib/approvals.mjs';
+import { BLOCKED_ACTS, blockedAction } from '../lib/blocked.mjs';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp' };
@@ -351,6 +352,20 @@ export function startBoard({
         if (v.error) return send(res, 400, v);
         const t = updateTask(p.tasks, body.id, v);
         return t ? send(res, 200, t) : send(res, 404, { error: '작업이 없습니다' });
+      }
+      const act = url.pathname.match(/^\/api\/task\/([^/]+)\/([^/]+)$/);
+      if (act) {
+        // 막힘 카드 단추: retry·reassign·done·cancel. 화면은 넘길 멤버를 member 로 보낸다
+        if (!BLOCKED_ACTS.includes(act[2])) return send(res, 400, { error: `동작은 ${BLOCKED_ACTS.join('|')} 중 하나여야 합니다` });
+        const id = decodeURIComponent(act[1]);
+        const task = readJsonl(p.tasks).find((t) => t.id === id);
+        if (!task) return send(res, 404, { error: '작업이 없습니다' });
+        const r = blockedAction(act[2], task, { note: body.note, to: body.to ?? body.member }, ids);
+        if (r.error) return send(res, 400, r);
+        const t = updateTask(p.tasks, id, r.patch);
+        const msg = validateMessage(r.message, ids);
+        if (!msg.error) appendJsonl(p.messages, { id: newId('M'), at, ...msg });
+        return send(res, 200, { task: t, queue: r.wake ? startQueue(pid, p) : 'off' });
       }
       return send(res, 404, { error: '없는 경로' });
     }
