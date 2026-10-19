@@ -166,6 +166,17 @@ test('보드 서버: 토큰·상태·POST·승인·켜기끄기·SSE·보안', a
       const timer = setTimeout(() => reject(new Error('SSE change 가 오지 않음')), 5000);
     });
     assert.ok(got);
+
+    // done/cancel 시 멤버의 마지막 이벤트가 start면 end 이벤트 추가
+    const task4 = await (await post('/api/tasks', { project: 'p', title: '테스트 작업', member: 'order' })).json();
+    // start 이벤트 수동으로 추가
+    appendJsonl(path.join(root, 'data', 'events.jsonl'), { at: new Date().toISOString(), project: 'p', member: 'order', type: 'start', taskId: task4.id });
+    const doneTsk = await (await post(`/api/task/${task4.id}/done`, { project: 'p' })).json();
+    const stAfterDone = await (await get('/api/state?project=p')).json();
+    const endEvent = stAfterDone.events.find((e) => e.type === 'end' && e.taskId === task4.id);
+    assert.ok(endEvent, '멤버의 마지막 이벤트가 start면 done 시 end 이벤트 추가');
+    assert.equal(endEvent.text, '사람이 정리');
+    assert.equal(endEvent.status, 'done');
   } finally {
     await board.close();
     fs.rmSync(root, { recursive: true, force: true });

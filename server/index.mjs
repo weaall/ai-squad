@@ -372,6 +372,23 @@ export function startBoard({
         const t = updateTask(p.tasks, id, r.patch);
         const msg = validateMessage(r.message, ids);
         if (!msg.error) appendJsonl(p.messages, { id: newId('M'), at, ...msg });
+        // done/cancel 시 멤버의 마지막 이벤트가 그 작업의 start면 end 이벤트 추가
+        if ((act[2] === 'done' || act[2] === 'cancel') && task.member) {
+          const events = readJsonl(p.events);
+          let lastEvent = null;
+          for (let i = events.length - 1; i >= 0; i--) {
+            if (events[i].member === task.member) {
+              lastEvent = events[i];
+              break;
+            }
+          }
+          if (lastEvent && lastEvent.type === 'start' && lastEvent.taskId === task.id) {
+            appendJsonl(p.events, {
+              at, project: pid, member: task.member,
+              type: 'end', taskId: task.id, status: t.status, text: '사람이 정리',
+            });
+          }
+        }
         return send(res, 200, { task: t, queue: r.wake ? startQueue(pid, p) : 'off' });
       }
       return send(res, 404, { error: '없는 경로' });
