@@ -1,8 +1,7 @@
 // AI Squad 보드 화면. 프레임워크 없이 상태 하나를 받아 전부 다시 그린다.
 import { SIZE, character, drawCharacter } from './pixel.js';
-import { budgetLevel, canApprove, confirmItems, inputKey, inputPayload, looksLikeDiff, orderOutcome, panelDecision, pendingInputs, renderDiff } from './logic.js';
+import { STATUS_FALLBACK, budgetLevel, canApprove, confirmItems, inputKey, inputPayload, looksLikeDiff, orderOutcome, panelDecision, pendingInputs, renderDiff, todoCounts, viewStatus } from './logic.js';
 const $ = (s) => document.querySelector(s);
-const STATUS = { working: '일하는 중', idle: '대기', blocked: '막힘' };
 const KIND = { order: '지시', handoff: '인계', question: '질문', answer: '답변', report: '완료 보고', note: '메모' };
 const TASK_COLS = [['todo', '할 일'], ['doing', '진행 중'], ['review', '검수'], ['blocked', '막힘'], ['done', '완료']];
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
@@ -88,7 +87,10 @@ function techBlock(m) {
     <div class="switches">${sw('headroom', '', m.headroom, 'headroom (토큰 압축, 기본 켜짐)')}${(m.pluginList || []).map((p) => sw('plugin', p.name, p.on, p.name)).join('')}</div>
     ${(m.pluginList || []).length ? '' : '<p class="muted small">플러그인·스킬·MCP 없음</p>'}`;
 }
-const pill = (s) => `<span class="pill st-${s}"><i class="dot st-${s}"></i>${STATUS[s] || s}</span>`;
+const statusName = (s) => (ui.data?.statusLabels || STATUS_FALLBACK)[s] || s;
+// 색은 서버 상태(m.status), 이름은 입력·승인 대기까지 나눈 보이는 상태
+const memberStatusName = (m) => statusName(viewStatus(m, ui.data || {}));
+const pill = (m) => `<span class="pill st-${m.status}"><i class="dot st-${m.status}"></i>${memberStatusName(m)}</span>`;
 const kindTag = (k) => `<span class="kind" style="--kc:var(--k-${esc(k)})">${esc(KIND[k] || k)}</span>`;
 function eventLabel(e) {
   if (!e) return '';
@@ -184,11 +186,12 @@ function render() {
   const lv = budgetLevel(bd.ratio, bd.warn);
   // 쓸 수 있는 양으로 오해하지 않게: 오늘 쓴 양만 보여 주고 남은 한도는 Claude 앱으로 안내한다
   const tip = `오늘 사용 — 예산 기준(비용 환산) ${fmtTok(tt.budgetTokens)} · 전체 토큰 ${fmtTok(tt.total)}${tt.costUsd !== undefined ? ` · 비용 US$${tt.costUsd}` : ''}\n입력 ${fmtTok(tt.input)} · 출력 ${fmtTok(tt.output)} · 캐시 읽기 ${fmtTok(tt.cacheRead)} · 캐시 쓰기 ${fmtTok(tt.cacheWrite)}${bd.daily ? `\n하루 상한 ${fmtTok(bd.daily)} (${Math.round(bd.ratio * 100)}%)` : ''}${bd.task ? ` · 작업당 ${fmtTok(bd.task)}` : ''}\n남은 한도는 Claude 앱 사용량 화면에서 확인`;
+  const tc = todoCounts(d.tasks);
   $('#stats').innerHTML = [
-    ['is-working', '일하는 중', d.counts.working],
-    ['', '대기', d.counts.pending + (d.counts.review ? ` · 검수 ${d.counts.review}` : '')],
-    ['is-blocked', '막힘', d.counts.blocked],
-  ].map(([c, l, n]) => `<span class="stat ${c}">${l} <b>${n}</b></span>`).join('') +
+    ['is-working', '일하는 중', d.counts.working, '지금 작업을 실행하고 있는 멤버 수'],
+    ['', '할 일', tc.todo + (tc.locked ? ` · 잠김 ${tc.locked}` : '') + (d.counts.review ? ` · 검수 ${d.counts.review}` : ''), '할 일: 아직 실행하지 않은 작업 수 (잠김: 선행 작업이 끝나야 시작)'],
+    ['is-blocked', '막힘', d.counts.blocked, '막힌 멤버·작업 수'],
+  ].map(([c, l, n, t]) => `<span class="stat ${c}" title="${t}">${l} <b>${n}</b></span>`).join('') +
     `<span class="stat tok-chip lv-${lv}" title="${esc(tip)}">오늘 사용 <b>${fmtShort(tt.total)}</b>${bd.daily ? `<span class="bar" role="meter" aria-label="오늘 토큰 사용률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round(bd.ratio * 100))}"><i style="width:${Math.min(100, bd.ratio * 100).toFixed(1)}%"></i></span><small>/ ${fmtShort(bd.daily)}</small>` : ''}</span>`;
   applyFx();
   fillSelects();
@@ -231,7 +234,7 @@ function renderCards() {
     return `<article class="card st-${m.status}${m.stalled ? ' is-stalled' : ''}${ui.selected === m.id ? ' is-selected' : ''}" data-member="${esc(m.id)}">
       <div class="card-head">${avatar(m.id)}
         <div class="card-who"><button type="button" class="link card-name" data-open="${esc(m.id)}">${esc(m.name)}</button>
-        <div class="card-id">${esc(m.id)}${m.pending ? ` · 대기 ${m.pending}` : ''}${flags(m)}</div></div>${pill(m.status)}</div>
+        <div class="card-id">${esc(m.id)}${m.pending ? ` · 할 일 ${m.pending}` : ''}${flags(m)}</div></div>${pill(m)}</div>
       <button type="button" class="card-task${m.current ? '' : ' is-empty'}" data-open="${esc(m.id)}" aria-label="${esc(m.name)} 자세히: ${esc(m.current || '맡은 작업 없음')}">${esc(m.current || '맡은 작업 없음')}</button>
       <div class="card-event">${ev ? `<span title="${esc(eventLabel(ev))}">${esc(eventLabel(ev))}</span><time datetime="${esc(ev.at)}" title="${esc(fullTime(ev.at))}">${rel(ev.at)}</time>` : '<span>이벤트 없음</span>'}</div>
       <div class="card-foot">
@@ -279,7 +282,7 @@ function renderRows() {
   const fs = $('#filter-status').value;
   const fm = $('#filter-member').value;
   const d = ui.data;
-  const ms = d.members.filter((m) => (!fs || m.status === fs) && (!fm || m.id === fm));
+  const ms = d.members.filter((m) => (!fs || viewStatus(m, d) === fs) && (!fm || m.id === fm));
   $('#rows').innerHTML = ms.map((m) => {
     const ev = m.lastEvent;
     const mine = d.events.filter((e) => e.member === m.id);
@@ -288,10 +291,10 @@ function renderRows() {
       <summary>
         ${avatar(m.id)}
         <span class="row-name">${esc(m.name)}<small>${esc(m.id)}${flags(m)}</small></span>
-        ${pill(m.status)}
+        ${pill(m)}
         <span class="row-cell${m.current ? '' : ' is-empty'}" title="${esc(m.current)}">${esc(m.current || '맡은 작업 없음')}</span>
         <span class="row-cell${ev ? '' : ' is-empty'}">${ev ? `${esc(eventLabel(ev))}<time>${rel(ev.at)}</time>` : '이벤트 없음'}</span>
-        <span class="row-num" title="대기 작업">${m.pending}</span>
+        <span class="row-num" title="할 일(아직 실행 안 한 작업)">${m.pending}</span>
         ${ICON_CHEV}
       </summary>
       <div class="row-body">
@@ -300,7 +303,7 @@ function renderRows() {
           <h3>담당 경로</h3>${pathList(m.owns)}
         </div>
         <div>
-          <h3>대기 작업 ${pending.length}</h3>${taskList(pending)}
+          <h3>할 일 ${pending.length}</h3>${taskList(pending)}
           <h3>인계 메모</h3><p class="handoff">${esc(m.handoff || '없음')}</p>
         </div>
         <div>
@@ -460,7 +463,7 @@ function renderModal() {
       <div>
         <section><h3>역할</h3><p class="handoff">${esc(m.role || '적힌 역할이 없습니다')}</p></section>
         <section><h3>지금 작업</h3><p class="handoff full">${esc(m.current || '맡은 작업 없음')}</p></section>
-        <section><h3>대기 작업 ${queued.length}</h3>${taskList(queued)}</section>
+        <section><h3>할 일 ${queued.length}</h3>${taskList(queued)}</section>
         <section><h3>인계 메모</h3><p class="handoff">${esc(m.handoff || '없음')}</p></section>
       </div>
       <div>
@@ -479,7 +482,7 @@ function renderModal() {
   modal.dataset.html = html + head;
   $('#modal-avatar').innerHTML = avatar(m.id, 'lg');
   $('#modal-title').textContent = m.name;
-  $('#modal-sub').innerHTML = `${esc(m.id)} · ${pill(m.status)}`;
+  $('#modal-sub').innerHTML = `${esc(m.id)} · ${pill(m)}`;
   $('#modal-body').innerHTML = html;
   modal.querySelectorAll('details.doc').forEach((x, i) => (x.open = Boolean(openDocs[i])));
   paintSprites();
@@ -751,7 +754,7 @@ const net = (() => {
       if (id !== 'human' && W >= 640) {
         ctx.font = `500 11.5px ${font}`;
         ctx.fillStyle = st === 'blocked' ? '#ff9b9b' : '#8d99bb';
-        ctx.fillText(clip(m.current || STATUS[st], 18), n.x, n.y + n.r + 32);
+        ctx.fillText(clip(m.current || memberStatusName(m), 18), n.x, n.y + n.r + 32);
       }
     }
   }
@@ -796,7 +799,7 @@ const net = (() => {
       tip.hidden = false;
       tip.style.left = `${h.n.x}px`;
       tip.style.top = `${h.n.y - h.n.r}px`;
-      tip.textContent = id === 'human' ? '사람 (나)' : `${m.name} · ${STATUS[m.status]}${m.lastEvent ? ' · ' + eventLabel(m.lastEvent) : ''}`;
+      tip.textContent = id === 'human' ? '사람 (나)' : `${m.name} · ${memberStatusName(m)}${m.lastEvent ? ' · ' + eventLabel(m.lastEvent) : ''}`;
     } else tip.hidden = true;
     if (id !== hover) {
       hover = id;

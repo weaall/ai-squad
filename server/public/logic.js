@@ -65,6 +65,23 @@ export function renderDiff(text, maxLines = 1500) {
 /** 예산 막대: 비율 → 단계(ok·warn·over). */
 export const budgetLevel = (ratio, warn = 0.8) => (ratio >= 1 ? 'over' : ratio >= warn ? 'warn' : 'ok');
 
+/** 상태 이름. 서버가 statusLabels(lib/state.mjs STATUS_LABEL)를 주면 그것을 쓴다 — 이 표는 서버 반영 전 대비. */
+export const STATUS_FALLBACK = { working: '일하는 중', idle: '쉬는 중', blocked: '막힘', input: '입력 대기', approval: '승인 대기' };
+
+/** 상단 '할 일' 칩: todo 수와 그중 선행이 남아 잠긴 수. */
+export function todoCounts(tasks = []) {
+  const todo = tasks.filter((t) => t.status === 'todo');
+  return { todo: todo.length, locked: todo.filter((t) => t.waitingOn?.length).length };
+}
+
+/** 보이는 멤버 상태: 일하는 중이 아니고 사람 답을 기다리면 입력 대기·승인 대기로 나눈다. */
+export function viewStatus(m, { tasks = [], approvals = [] } = {}) {
+  if (m.status === 'working') return 'working';
+  if (tasks.some((t) => t.member === m.id && t.status === 'input' && t.input)) return 'input';
+  if (approvals.some((a) => a.from === m.id && a.status === 'pending')) return 'approval';
+  return m.status;
+}
+
 /** 입력 대기 작업: 먼저 요청한 것부터. key 는 같은 요청이면 같다. */
 export const inputKey = (t) => `${t.id}|${t.input.at}`;
 export const pendingInputs = (tasks = []) =>
