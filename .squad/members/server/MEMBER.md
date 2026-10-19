@@ -30,7 +30,7 @@ plugins:
 
 ## 지금 작업
 
-인계: T-mvewgg01-ffc7: squad board 가 이제 감시 프로세스로 자식 보드를 띄운다(bin/board-watch.mjs). 자식 e
+인계: T-mvexte96-54bd 연결 부탁(lib/runner.mjs runMember): ① 상주 세션 — task 의 saved.sessionI
 
 ## 인계 메모
 

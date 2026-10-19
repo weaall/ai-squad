@@ -30,8 +30,6 @@ plugins:
 
 ## 지금 작업
 
-인계: 보드 이벤트 type 'outside-warn' 추가(runner): {taskId, text, files:[{path, member}]} —
-
 ## 인계 메모
 
 ## 하지 말 것

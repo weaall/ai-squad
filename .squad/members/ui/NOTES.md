@@ -1,5 +1,9 @@
 ## 인계 메모
 
+- T-mvey2es7-3045: 사용량 탭 멤버 표에 '시작 맥락 전→후' 열(ctxCell, startContextStats {before,after:{n,avg}}, 변화 %). 데이터는 d.startContext ?? d.usage.startContext[멤버id] 로 읽음 — 서버가 어디에 싣는지 정해지면 맞출 것. 없으면 '-'. 캡처·커밋 안 함.
+
+- T-mvewtttd-b953: 서버 hello version 인계 확인 — app.js connect() 가 이미 처리(T-mvewn8pb-845c, 둘 다 null 아니고 다르면 reload). 코드 변경 없음.
+
 - T-mvewgg91-c63f: 머리줄 #use-chip 은 'Claude 5h n% · 주 n%' 요약 하나(높은 쪽 lv 색) → 누르면 dialog#use-modal(fillUseModal: 반원 게이지 2·runner/Headroom 비율 SVG 막대·Headroom 절약·멤버 상위 5·#usage 링크). #use-pop 팝오버 삭제.
   headroomView 에 pct 없으면 saved/before, newPct(new_input_savings_percent) 추가. 1440·1280 데모 캡처 확인(데모는 Headroom '수집 전'). server/index.test.mjs 1개 실패는 ui 무관.
 

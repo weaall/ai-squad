@@ -973,7 +973,14 @@ useModal.addEventListener('click', (e) => {
 const usd = (n) => (n === null || n === undefined ? '-' : `$${n < 100 ? n.toFixed(2) : Math.round(n).toLocaleString('ko-KR')}`);
 /** 서버 runStats(최근 기록 전체) → 표 칸: 실행 수, 툴팁에 실행당 기본 맥락·작업당 토큰 */
 const runCell = (s) => (s?.runs ? `<span title="실행당 기본 맥락 ${fmtShort(s.avgBase)} · 작업당 ${fmtShort(s.perTask)}토큰">${s.runs}</span>` : '-');
-const runnerDot = (r) =>`<i class="dot-r r-${esc(r)}"></i>${esc(RUNNER_NAME[r] || r)}`;
+/** startContextStats {before,after:{n,avg}} → '전 → 후 (-%)'. 한쪽만 있으면 그것만, 둘 다 없으면 '-' */
+const ctxCell = (s) => {
+  const b = s?.before?.n ? s.before : null, a = s?.after?.n ? s.after : null;
+  if (!b && !a) return '-';
+  const pct = b && a && b.avg ? ` <span class="muted">${Math.round((a.avg / b.avg - 1) * 100)}%</span>` : '';
+  return `<span title="전 ${b ? `${fmtTok(b.avg)} (${b.n}회)` : '-'} · 후 ${a ? `${fmtTok(a.avg)} (${a.n}회)` : '-'}">${b ? fmtShort(b.avg) : '-'} → ${a ? fmtShort(a.avg) : '-'}${pct}</span>`;
+};
+const runnerDot =(r) =>`<i class="dot-r r-${esc(r)}"></i>${esc(RUNNER_NAME[r] || r)}`;
 let headroomAt = 0;
 async function loadHeadroom() {
   if (Date.now() - headroomAt < 60e3) return; // 서버는 5분마다 모은다
@@ -1023,8 +1030,8 @@ function renderUsageTab() {
     <p class="muted small">추정값은 Antigravity 토큰을 이번 주 Claude 실제 단가(비용 ÷ 예산 기준 토큰)로 바꾼 것 — 청구액이 아닙니다.</p>`;
 
   $('#use-members').innerHTML = `<h3 class="use-h">멤버별 <span class="muted">이번 주${r.truncated ? ' · 최근 기록 기준' : ''}</span></h3>
-    ${r.members.length ? `<table class="use-table"><thead><tr><th>멤버</th><th class="num">작업</th><th class="num" title="첫 응답이 읽은 입력 — 시스템 프롬프트·문서·도구 설명">평균 기본 맥락</th><th class="num">작업당 토큰</th><th class="num" title="최근 기록 전체의 실행 수 · 실행당 기본 맥락 · 작업당 토큰(서버 집계)">누적 실행</th><th>주로 쓴 runner</th><th>모델</th><th class="num">비용</th></tr></thead>
-    <tbody>${r.members.map((m) => `<tr><td>${esc(nameOf(m.id))}</td><td class="num">${m.tasks}</td><td class="num">${m.avgBase === null ? '-' : fmtShort(m.avgBase)}</td><td class="num">${m.perTask === null ? '-' : fmtShort(m.perTask)}</td><td class="num">${runCell(member(m.id)?.runStats)}</td><td>${runnerDot(m.runner)}</td><td class="mono">${esc(m.model || '기본값')}</td><td class="num">${usd(m.cost)}</td></tr>`).join('')}</tbody></table>` : '<p class="empty">이번 주 기록 없음</p>'}`;
+    ${r.members.length ? `<table class="use-table"><thead><tr><th>멤버</th><th class="num">작업</th><th class="num" title="첫 응답이 읽은 입력 — 시스템 프롬프트·문서·도구 설명">평균 기본 맥락</th><th class="num">작업당 토큰</th><th class="num" title="최근 기록 전체의 실행 수 · 실행당 기본 맥락 · 작업당 토큰(서버 집계)">누적 실행</th><th class="num" title="실행당 평균 시작 맥락: 브리프·상주 세션 도입 전 → 후 (n = 실행 수)">시작 맥락 전→후</th><th>주로 쓴 runner</th><th>모델</th><th class="num">비용</th></tr></thead>
+    <tbody>${r.members.map((m) => `<tr><td>${esc(nameOf(m.id))}</td><td class="num">${m.tasks}</td><td class="num">${m.avgBase === null ? '-' : fmtShort(m.avgBase)}</td><td class="num">${m.perTask === null ? '-' : fmtShort(m.perTask)}</td><td class="num">${runCell(member(m.id)?.runStats)}</td><td class="num">${ctxCell((d.startContext || d.usage?.startContext)?.[m.id])}</td><td>${runnerDot(m.runner)}</td><td class="mono">${esc(m.model || '기본값')}</td><td class="num">${usd(m.cost)}</td></tr>`).join('')}</tbody></table>` : '<p class="empty">이번 주 기록 없음</p>'}`;
 
   $('#use-top').innerHTML = `<h3 class="use-h">비싼 작업 상위 10 <span class="muted">이번 주</span></h3>
     ${r.top.length ? `<table class="use-table"><thead><tr><th>작업</th><th>멤버</th><th>runner</th><th class="num">토큰</th><th class="num">비용</th></tr></thead>
