@@ -19,7 +19,7 @@ import { addInbox, doneInbox, INBOX_LABEL, loadInbox, takeInbox } from '../lib/i
 import { buildReport, dateKey, isDateKey, polishPrompt } from '../lib/report.mjs';
 import { capture, captureName } from '../lib/capture.mjs';
 import { loadConfig } from '../lib/config.mjs';
-import { runnerStatuses, LOGIN_COMMAND } from '../lib/runners/index.mjs';
+import { getRunner, runnerStatuses, LOGIN_COMMAND } from '../lib/runners/index.mjs';
 import { withTaskLock } from '../lib/runners/lock.mjs';
 import { outputStyleFile } from '../lib/runners/skills.mjs';
 import { retryOnce } from '../lib/runners/retry.mjs';
@@ -266,6 +266,7 @@ const commands = {
     add('claude CLI 로그인', claude?.state === 'ok', claude?.state === 'ok' ? '' : `${LOGIN_COMMAND} (설치: npm i -g @anthropic-ai/claude-code)`);
     const installed = readInstalled();
     const needHeadroom = new Set();
+    const needAgy = new Set();
     for (const id of ids) {
       const { path: dir, squad } = resolveProject(ROOT, projects[id]);
       const there = fs.existsSync(dir);
@@ -277,6 +278,7 @@ const commands = {
       const seen = new Map();
       for (const m of members) {
         if (m.headroom) needHeadroom.add(`${id}/${m.id}`);
+        if (m.runner === 'antigravity') needAgy.add(`${id}/${m.id}`);
         // outputStyle 파일이 없으면 실행은 되지만 스타일 없이 돈다
         if (m.outputStyle) add(`${id} 출력 스타일 ${m.outputStyle} (${m.id})`, Boolean(outputStyleFile(m.outputStyle)), outputStyleFile(m.outputStyle) ? '' : `claude plugin install ${m.outputStyle.replace(/-not-coding$/, '')}  (~/.claude/plugins/cache/<마켓>/<플러그인>/<버전>/output-styles/${m.outputStyle}.md)`);
         for (const p of m.plugins) {
@@ -290,6 +292,9 @@ const commands = {
       }
     }
     if (needHeadroom.size) add(`headroom (${[...needHeadroom].slice(0, 3).join(',')}${needHeadroom.size > 3 ? ' 외' : ''})`, hasCommand('headroom'), hasCommand('headroom') ? '' : 'pip install headroom-ai  (또는 MEMBER.md 의 headroom 끄기)');
+    // Antigravity 는 선택 — 쓰는 멤버가 없으면 없어도 ? 로만 보인다
+    const agy = await getRunner(loadConfig(ROOT), 'antigravity').status({ force: true });
+    add(`Antigravity(agy) 설치·로그인${needAgy.size ? ` (${[...needAgy].slice(0, 3).join(',')})` : ''}`, agy.state === 'ok' ? true : needAgy.size ? false : null, agy.state === 'ok' ? '' : agy.state === 'login' ? '터미널에서 agy 를 실행해 로그인' : 'https://antigravity.google/docs 에서 CLI 설치');
     console.log(table([['상태', '점검', '해결'], ...rows]));
     console.log('\n설치는 하지 않았습니다. 없음 은 위 해결 명령이나 node bin/squad.mjs setup 으로, ? 는 이 PC 에서 확인할 수 없는 것(내장 스킬·커넥터)입니다.');
     if (rows.some((r) => r[0] === '없음')) process.exitCode = 1;
@@ -439,7 +444,7 @@ const commands = {
     const m = members.find((x) => x.id === memberId);
     if (!m) fail(`멤버가 없습니다: ${memberId}`);
     if (m.runner === 'external') fail(`${m.name}: runner=external 이라 CLI 가 실행하지 않습니다`);
-    if (!loadConfig(ROOT).runners[m.runner]) fail(`${m.name}: runner=${m.runner} 가 squad.config.json 의 runners 에 없습니다`);
+    try { getRunner(loadConfig(ROOT), m.runner); } catch { fail(`${m.name}: runner=${m.runner} 가 squad.config.json 의 runners 에 없습니다`); }
     const tasks = readJsonl(paths.tasks);
     // 할 일이 없고 이 멤버가 검수할 작업이 있으면 검수를 한다
     const reviewing = !taskId && !tasks.some((t) => t.member === m.id && t.status === 'todo') && tasks.find((t) => t.status === 'review' && t.reviewer === m.id);
