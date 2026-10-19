@@ -47,10 +47,10 @@ const HELP = `AI Squad CLI
                                            --json 만 주면 설치할 목록만 출력. 로그인은 하지 않고 안내만
   migrate <project> [--to squads/<project>] [--yes]   스쿼드 문서를 이 저장소로 복사하고 squadDir 지정 (--yes 없으면 미리보기)
   status [project]                         멤버별 상태 표
-  order <project> "<지시>" [--dry] [--auto] [--headroom]
+  order <project> "<지시>" [--dry] [--auto]
                                            메인 AI(squad.config.json mainAi)가 계획·실행 순서를 만들고, 사람이 승인하면 배정
                                            --dry: 계획만 / --auto: 승인 뒤 배정하고, 한 번 더 승인하면 순서대로 실행
-  run <project> <member> [taskId] [--headroom] [--retry] [--runner antigravity]    멤버에게 작업 실행 (MEMBER.md 의 runner, --runner 로 덮어쓰기). --retry: 실패 시 1회 재시도(시간 초과·잠금 충돌 제외)
+  run <project> <member> [taskId] [--retry] [--runner antigravity]    멤버에게 작업 실행 (MEMBER.md 의 runner, --runner 로 덮어쓰기). --retry: 실패 시 1회 재시도(시간 초과·잠금 충돌 제외)
   approve request <project> <from> <push|deploy|migrate|send|delete> "<무엇을>" [--reason 이유] [--scope 저장소·경로] [--task T-..]
                 [--details-file 설명.md] [--diff-file 변경.sql|.diff] [--files a,b] [--cmd "명령"]... [--risk 낮음|보통|높음] [--rollback "되돌리는 방법"]
   ask <project> <from> preview|choice|form "<제목>" --task T-.. [--text 설명]
@@ -271,7 +271,6 @@ const commands = {
     const claude = (await runnerStatuses(loadConfig(ROOT), { force: true })).find((r) => r.name === 'claude');
     add('claude CLI 로그인', claude?.state === 'ok', claude?.state === 'ok' ? '' : `${LOGIN_COMMAND} (설치: npm i -g @anthropic-ai/claude-code)`);
     const installed = readInstalled();
-    const needHeadroom = new Set();
     const needAgy = new Set();
     for (const id of ids) {
       const { path: dir, squad } = resolveProject(ROOT, projects[id]);
@@ -283,13 +282,11 @@ const commands = {
       add(`${id} 스쿼드 문서 ${squad}`, members.length > 0, members.length ? '' : `SQUAD.md·members/ 를 가져오거나 node bin/squad.mjs init ${id} <경로>`);
       const seen = new Map();
       for (const m of members) {
-        if (m.headroom) needHeadroom.add(`${id}/${m.id}`);
         if (m.runner === 'antigravity') needAgy.add(`${id}/${m.id}`);
         // outputStyle 파일이 없으면 실행은 되지만 스타일 없이 돈다
         if (m.outputStyle) add(`${id} 출력 스타일 ${m.outputStyle} (${m.id})`, Boolean(outputStyleFile(m.outputStyle)), outputStyleFile(m.outputStyle) ? '' : `claude plugin install ${m.outputStyle.replace(/-not-coding$/, '')}  (~/.claude/plugins/cache/<마켓>/<플러그인>/<버전>/output-styles/${m.outputStyle}.md)`);
         for (const p of m.plugins) {
-          if (p === 'headroom') needHeadroom.add(`${id}/${m.id}`);
-          else (seen.get(p) || seen.set(p, []).get(p)).push(m.id);
+          if (p !== 'headroom') (seen.get(p) || seen.set(p, []).get(p)).push(m.id);
         }
       }
       for (const [p, who] of seen) {
@@ -297,7 +294,7 @@ const commands = {
         add(`${id} 플러그인 ${p} (${who.join(',')})`, c.state === 'ok' ? true : c.state === 'missing' ? false : null, c.hint);
       }
     }
-    if (needHeadroom.size) add(`headroom (${[...needHeadroom].slice(0, 3).join(',')}${needHeadroom.size > 3 ? ' 외' : ''})`, hasCommand('headroom'), hasCommand('headroom') ? '' : 'pip install headroom-ai  (또는 MEMBER.md 의 headroom 끄기)');
+    add('headroom (claude 실행을 항상 감쌈)', hasCommand('headroom'), hasCommand('headroom') ? '' : 'pip install headroom-ai  (없으면 경고 후 claude 로 바로 실행)');
     // Antigravity 는 선택 — 쓰는 멤버가 없으면 없어도 ? 로만 보인다
     const agy = await getRunner(loadConfig(ROOT), 'antigravity').status({ force: true });
     add(`Antigravity(agy) 설치·로그인${needAgy.size ? ` (${[...needAgy].slice(0, 3).join(',')})` : ''}`, agy.state === 'ok' ? true : needAgy.size ? false : null, agy.state === 'ok' ? '' : agy.state === 'login' ? '터미널에서 agy 를 실행해 로그인' : 'https://antigravity.google/docs 에서 CLI 설치');
@@ -383,7 +380,7 @@ const commands = {
     if ((await gate(paths, members, 'order', `계획 · ${instruction.slice(0, 80)}`)) !== true) return void (process.exitCode = 1);
     let r;
     try {
-      r = await planOrder({ root: ROOT, paths, members, instruction, headroom: Boolean(o.headroom) || loadConfig(ROOT).headroom.default, stderr: 'inherit' });
+      r = await planOrder({ root: ROOT, paths, members, instruction, stderr: 'inherit' });
     } catch (e) {
       fail(e.message);
     }
@@ -403,7 +400,7 @@ const commands = {
       } catch (e) {
         fail(e.message);
       }
-      const woke = wake(paths, o.headroom ? ['--headroom'] : []);
+      const woke = wake(paths, []);
       return console.log(`작업 ${saved.length}개를 자동 배정했습니다. ${woke ? '대기열을 백그라운드로 시작했습니다' : '돌고 있는 대기열이 이어서 합니다'} (진행은 status·보드에서)`);
     }
     console.log('확인이 필요합니다:');
@@ -431,7 +428,7 @@ const commands = {
         process.exitCode = 1;
         return console.log('예산 확인을 넘지 못해 뒤 순서는 멈췄습니다');
       }
-      const res = await withTaskLock(path.join(paths.squad, 'locks'), t.id, () => runMember({ root: ROOT, paths, member: m, task: t, members, headroom: Boolean(o.headroom) }));
+      const res = await withTaskLock(path.join(paths.squad, 'locks'), t.id, () => runMember({ root: ROOT, paths, member: m, task: t, members }));
       if (res.locked) {
         console.log(`건너뜀: ${t.id} — 이미 다른 곳에서 실행 중입니다`);
         continue;
@@ -461,7 +458,7 @@ const commands = {
     if (wait.length) fail(`선행 작업이 아직 끝나지 않았습니다: ${wait.join(', ')}`);
     if ((await gate(paths, members, m.id, `실행 · ${task.title}`, task.id)) !== true) return void (process.exitCode = 1);
     const res = await withTaskLock(path.join(paths.squad, 'locks'), task.id, () =>
-      retryOnce(() => runMember({ root: ROOT, paths, member: m, task, members, headroom: Boolean(o.headroom) }), {
+      retryOnce(() => runMember({ root: ROOT, paths, member: m, task, members }), {
         retry: Boolean(o.retry),
         onRetry: (r) => console.log(`실패해서 한 번 더 실행합니다: ${String(r.summary).slice(0, 200)}`),
       }));
@@ -480,7 +477,7 @@ const commands = {
     if (!release) return console.log('대기열이 이미 돌고 있습니다');
     console.log(`대기열 실행 — 동시에 ${max}개까지`);
     const r = await runQueue({
-      root: ROOT, paths, max, headroom: Boolean(o.headroom), retry: Boolean(o.retry),
+      root: ROOT, paths, max, retry: Boolean(o.retry),
       loadMembers: () => loadMembers(paths),
       gate: (subject, what, taskId) => gate(paths, members, subject, what, taskId),
     });
@@ -781,7 +778,7 @@ const { values, positionals } = parseArgs({
   allowPositionals: true,
   strict: false,
   options: {
-    dry: { type: 'boolean' }, headroom: { type: 'boolean' }, retry: { type: 'boolean' }, demo: { type: 'boolean' }, port: { type: 'string' }, kind: { type: 'string' },
+    dry: { type: 'boolean' }, retry: { type: 'boolean' }, demo: { type: 'boolean' }, port: { type: 'string' }, kind: { type: 'string' },
     task: { type: 'string' }, status: { type: 'string' }, detail: { type: 'string' }, summary: { type: 'string' },
     reason: { type: 'string' }, name: { type: 'string' }, auto: { type: 'boolean' }, scope: { type: 'string' },
     max: { type: 'string' }, date: { type: 'string' }, ai: { type: 'boolean' }, member: { type: 'string' }, width: { type: 'string' },
