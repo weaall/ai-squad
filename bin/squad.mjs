@@ -21,6 +21,7 @@ import { capture, captureName } from '../lib/capture.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { runnerStatuses, LOGIN_COMMAND } from '../lib/runners/index.mjs';
 import { withTaskLock } from '../lib/runners/lock.mjs';
+import { outputStyleFile } from '../lib/runners/skills.mjs';
 import { retryOnce } from '../lib/runners/retry.mjs';
 import { setSecret, secretsFile } from '../lib/secrets.mjs';
 import { ACTIONS, DECISIONS, decideApproval, decisionText, loadApprovals, requestApproval, validateApprovalRequest } from '../lib/approvals.mjs';
@@ -276,6 +277,8 @@ const commands = {
       const seen = new Map();
       for (const m of members) {
         if (m.headroom) needHeadroom.add(`${id}/${m.id}`);
+        // outputStyle 파일이 없으면 실행은 되지만 스타일 없이 돈다
+        if (m.outputStyle) add(`${id} 출력 스타일 ${m.outputStyle} (${m.id})`, Boolean(outputStyleFile(m.outputStyle)), outputStyleFile(m.outputStyle) ? '' : `claude plugin install ${m.outputStyle.replace(/-not-coding$/, '')}  (~/.claude/plugins/cache/<마켓>/<플러그인>/<버전>/output-styles/${m.outputStyle}.md)`);
         for (const p of m.plugins) {
           if (p === 'headroom') needHeadroom.add(`${id}/${m.id}`);
           else (seen.get(p) || seen.set(p, []).get(p)).push(m.id);
