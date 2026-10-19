@@ -24,7 +24,7 @@ import { QUEUE_LOCK, lockTask, wakeQueue, withTaskLock } from '../lib/runners/lo
 import { outputStyleFile } from '../lib/runners/skills.mjs';
 import { retryOnce } from '../lib/runners/retry.mjs';
 import { setSecret, secretsFile } from '../lib/secrets.mjs';
-import { ACTIONS, DECISIONS, decideApproval, decisionText, loadApprovals, requestApproval, validateApprovalRequest } from '../lib/approvals.mjs';
+import { ACTIONS, DECISIONS, decideApproval, decisionText, loadApprovals, requestApproval, resumeAfterDecision, validateApprovalRequest } from '../lib/approvals.mjs';
 import { INPUT_KINDS, requestInput, validateInputRequest } from '../lib/input.mjs';
 import { askRequest } from './ask.mjs';
 import { runApproved, runBlocker } from './approve.mjs';
@@ -662,7 +662,10 @@ const commands = {
         fail(e.message);
       }
       addMessage(paths, members, { from: 'human', to: d.from, kind: 'answer', taskId: d.taskId, text: decisionText(d) });
-      return console.log(`${d.id} → ${DECISIONS[d.status]}${d.status === 'approved' && d.commands?.length ? ` — 명령 실행: node bin/squad.mjs approve run ${paths.id} ${d.id}` : ''}`);
+      console.log(`${d.id} → ${DECISIONS[d.status]}${d.status === 'approved' && d.commands?.length ? ` — 명령 실행: node bin/squad.mjs approve run ${paths.id} ${d.id}` : ''}`);
+      // 멈춘 작업을 todo 로 되돌린다 — 대기열은 보드 서버가 깨우거나 run-queue 로 직접 돌린다
+      if (resumeAfterDecision(paths, d)) console.log(`작업 ${d.taskId} 를 todo 로 되돌림 — 보드에서 대기열 시작 또는 node bin/squad.mjs run-queue ${paths.id}`);
+      return;
     }
     if (sub === 'run') {
       // 승인된 명령만 프로젝트 폴더에서 직접 실행하고 결과를 approvals.jsonl('run' 줄)·보드 이벤트·요청 멤버 메시지로 남긴다
