@@ -12,10 +12,11 @@ import {
 import { setSection } from '../lib/md.mjs';
 import { STATUS_LABEL, buildState, describeEvent, tokenTotal } from '../lib/state.mjs';
 import { validateMessage, validateTask } from '../lib/validate.mjs';
-import { askMainAi, budgetGate, planOrder, runMember, runOrder, runQueue, runReview, saveOrder } from '../lib/runner.mjs';
+import { askMainAi, budgetGate, finishReview, planOrder, runMember, runOrder, runQueue, runReview, saveOrder } from '../lib/runner.mjs';
 import { waitDecision } from '../lib/approvals.mjs';
 import { planNeedsConfirm } from '../lib/confirm.mjs';
 import { fastPlan } from '../lib/runners/fastpath.mjs';
+import { precheck } from '../lib/runners/precheck.mjs';
 import { addInbox, doneInbox, INBOX_LABEL, loadInbox, takeInbox } from '../lib/inbox.mjs';
 import { buildReport, dateKey, isDateKey, polishPrompt } from '../lib/report.mjs';
 import { capture, captureName } from '../lib/capture.mjs';
@@ -523,6 +524,10 @@ const commands = {
     if (!task) fail(`작업이 없습니다: ${taskId}`);
     if (task.status !== 'review') fail(`검수 대기(review) 작업이 아닙니다: ${task.status}`);
     const rid = task.reviewer || loadConfig(ROOT).review.default;
+    // 확인 명령(tsc·lint·test)이 통과하면 LLM 검수 없이 done — 실패·큰 diff·화면 변경일 때만 아래 LLM 검수
+    const pre = precheck({ member: members.find((m) => m.id === task.member), task, cwd: paths.path });
+    if (pre.pass) return void console.log(`통과: ${finishReview({ paths, task, reviewer: rid || 'order', verdict: pre }).note}`);
+    console.log(`LLM 검수로 갑니다 — ${pre.why}`);
     if ((await gate(paths, members, rid, `검수 · ${task.title}`, task.id)) !== true) return void (process.exitCode = 1);
     try {
       const v = await runReview({ root: ROOT, paths, members, task });
