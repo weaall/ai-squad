@@ -1,5 +1,5 @@
 ## 인계 메모
 
-- T-mves6pxd-39ba: `squad msg` 뒤처리 bin/msg.mjs afterMessage — question → 받는 멤버 답변 작업(easy)+detached run-queue, answer --task T → T 가 input/blocked(task.input 없음)면 todo.
-- 프롬프트 규칙·멤버 목록, run 시작 때 안 읽은 메시지+readAt, 오더 요약은 lib 소유라 server 에 handoff(M-mvesbovk-5449).
-- node --test 106개 중 lib/v04 run-queue 동시 실행 타이밍 테스트 1개 실패(lib 미변경, 부하 의심).
+- T-mvet33gc-7331: lib/runners/edits.mjs judgeEdits — 경로 밖 판단을 자기 도구 이벤트(Edit·Write·MultiEdit·NotebookEdit path)로, Bash 는 bash:true(판단 불가), git 차이는 gitOnly[{path, member}] 참고용.
+- lib/runner.mjs runMember 연결은 server 소유라 handoff(M-mvet97rc-badd) — 연결 전까지 QUGO 오탐은 그대로.
+- node --test 112개 통과.
