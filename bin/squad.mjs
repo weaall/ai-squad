@@ -27,6 +27,7 @@ import { setSecret, secretsFile } from '../lib/secrets.mjs';
 import { ACTIONS, DECISIONS, decideApproval, decisionText, loadApprovals, requestApproval, validateApprovalRequest } from '../lib/approvals.mjs';
 import { INPUT_KINDS, requestInput, validateInputRequest } from '../lib/input.mjs';
 import { askRequest } from './ask.mjs';
+import { runApproved, runBlocker } from './approve.mjs';
 import { afterMessage } from './msg.mjs';
 import {
   checkPlugin, expandPath, isPortable, isTrusted, mergedProjects, migrate, migrateFiles, readInstalled, resolveProject, setupPlan, toolList,
@@ -58,6 +59,8 @@ const HELP = `AI Squad CLI
                                            작업을 입력 대기로 멈춘다. 답은 answer 메시지로 온다
   approve list <project>                   승인 대기 목록 (approve 명령은 --demo 면 시연 파일에)
   approve yes|no <project> <approvalId> [--reason 사유]   승인·거절 (요청한 멤버에게 answer 메시지)
+  approve run <project> <approvalId>       승인된 요청의 --cmd 명령만 프로젝트 폴더에서 실행, 로그를 승인 기록·보드에 남김
+                                           (멤버 도구에는 git push·deploy/·gcloud·prisma migrate deploy 가 들어가지 않는다)
   auth status                              runner 별 연결 상태
   auth set <runner>                        외부 runner 의 API 키 넣기 (입력이 화면에 보이지 않음)
   auth clear <runner>                      저장한 키 지우기
@@ -594,7 +597,7 @@ const commands = {
     console.log(table([['id', '상태', '받은 때', '지시'], ...list.map((i) => [i.id, INBOX_LABEL[i.status], localTime(i.at), cut(i.text, 50)])]));
   },
 
-  approve([sub, projectId, a, b, c], o) {
+  async approve([sub, projectId, a, b, c], o) {
     const { paths, members } = ctx(projectId, { demo: Boolean(o.demo) }); // --demo: 시연 파일에만
     if (sub === 'request') {
       const readOpt = (f, label) => {
@@ -629,9 +632,28 @@ const commands = {
         fail(e.message);
       }
       addMessage(paths, members, { from: 'human', to: d.from, kind: 'answer', taskId: d.taskId, text: decisionText(d) });
-      return console.log(`${d.id} → ${DECISIONS[d.status]}`);
+      return console.log(`${d.id} → ${DECISIONS[d.status]}${d.status === 'approved' && d.commands?.length ? ` — 명령 실행: node bin/squad.mjs approve run ${paths.id} ${d.id}` : ''}`);
     }
-    fail('사용법: approve request|list|yes|no ...');
+    if (sub === 'run') {
+      // 승인된 명령만 프로젝트 폴더에서 직접 실행하고 결과를 approvals.jsonl('run' 줄)·보드 이벤트·요청 멤버 메시지로 남긴다
+      const res = await withTaskLock(path.join(paths.squad, 'locks'), a, () => {
+        const ap = loadApprovals(paths).find((x) => x.id === a);
+        const why = runBlocker(ap, readJsonl(paths.approvals));
+        if (why) fail(`${why}: ${a}`);
+        console.log(`승인 ${ap.id} 실행 — ${ap.commands.length}개 명령 (${paths.path})`);
+        const r = runApproved(ap.commands, paths.path);
+        appendJsonl(paths.approvals, { type: 'run', id: ap.id, at: now(), ok: r.ok, code: r.code, log: r.log });
+        const text = `승인 실행 ${r.ok ? '완료' : `실패(종료 ${r.code})`} · ${ACTIONS[ap.action]} — ${ap.text}`;
+        emit(paths, ap.from, { type: 'log', status: r.ok ? 'idle' : 'blocked', text: cut(text, 500) });
+        addMessage(paths, members, { from: 'human', to: ap.from, kind: 'answer', taskId: ap.taskId, text: `${text}\n${r.log}`.slice(0, 2000) });
+        return r;
+      });
+      if (res.locked) fail(`이미 실행 중인 승인입니다: ${a}`);
+      console.log(res.log);
+      if (!res.ok) process.exitCode = 1;
+      return;
+    }
+    fail('사용법: approve request|list|yes|no|run ...');
   },
 
   ask([projectId, from, kind, title], o) {
