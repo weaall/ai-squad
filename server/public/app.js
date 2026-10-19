@@ -85,7 +85,7 @@ function techBlock(m) {
     `<label class="switch"><input type="checkbox" role="switch" data-toggle="${kind}" data-member="${esc(m.id)}" data-name="${esc(name)}"${on ? ' checked' : ''}><span class="switch-ui" aria-hidden="true"></span><span class="switch-label" title="${esc(label)}">${esc(label)}</span></label>`;
   return `<dl class="kv"><dt>실행</dt><dd>${esc(m.runner)}</dd><dt>모델</dt><dd>${esc(m.model || '기본값')}</dd><dt>도구</dt><dd>${esc(m.tools.join(', ') || '기본(Read·Edit·Write·Glob·Grep)')}</dd></dl>
     <p class="muted small">켜진 것만 실행 프롬프트에 들어갑니다</p>
-    <div class="switches">${sw('headroom', '', m.headroom, 'headroom (토큰 압축으로 감싸기)')}${(m.pluginList || []).map((p) => sw('plugin', p.name, p.on, p.name)).join('')}</div>
+    <div class="switches">${sw('headroom', '', m.headroom, 'headroom (토큰 압축, 기본 켜짐)')}${(m.pluginList || []).map((p) => sw('plugin', p.name, p.on, p.name)).join('')}</div>
     ${(m.pluginList || []).length ? '' : '<p class="muted small">플러그인·스킬·MCP 없음</p>'}`;
 }
 const pill = (s) => `<span class="pill st-${s}"><i class="dot st-${s}"></i>${STATUS[s] || s}</span>`;
