@@ -25,13 +25,19 @@ import { setSecret, secretsFile } from '../lib/secrets.mjs';
 import { ACTIONS, DECISIONS, decideApproval, decisionText, loadApprovals, requestApproval, validateApprovalRequest } from '../lib/approvals.mjs';
 import { INPUT_KINDS, requestInput, validateInputRequest } from '../lib/input.mjs';
 import { askRequest } from './ask.mjs';
+import { checkPlugin, expandPath, isPortable, isTrusted, mergedProjects, migrate, migrateFiles, readInstalled, resolveProject } from './setup.mjs';
+import { hasCommand } from '../lib/runners/proc.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const now = () => new Date().toISOString();
 
 const HELP = `AI Squad CLI
 
-  init <project> <path> [--name 이름]     .squad 뼈대와 projects.json 항목 만들기
+  init <project> <path> [--name 이름] [--squad-dir squads/<project>] [--local]
+                                           .squad 뼈대와 projects.json 항목 만들기. path 는 상대 경로·%USERPROFILE% 그대로 저장
+                                           --local: 이 PC 전용 projects.local.json(git 제외)에 경로만 덮어쓰기
+  doctor [project]                         이 PC 점검: claude 로그인·headroom·멤버 플러그인 설치·경로·작업 공간 신뢰 (설치는 안 함)
+  migrate <project> [--to squads/<project>] [--yes]   스쿼드 문서를 이 저장소로 복사하고 squadDir 지정 (--yes 없으면 미리보기)
   status [project]                         멤버별 상태 표
   order <project> "<지시>" [--dry] [--auto] [--headroom]
                                            메인 AI(squad.config.json mainAi)가 계획·실행 순서를 만들고, 사람이 승인하면 배정
@@ -205,16 +211,26 @@ const commands = {
   },
 
   init([projectId, projectPath], o) {
-    if (!isId(projectId) || !projectPath) fail('사용법: init <project> <path>');
-    const abs = path.resolve(projectPath);
+    if (!isId(projectId) || !projectPath) fail('사용법: init <project> <path> [--squad-dir squads/<project>] [--local]');
+    // 상대 경로(저장소 기준)·%USERPROFILE% 같은 환경변수는 풀지 않고 그대로 저장한다 → 다른 PC 에서도 같은 값
+    const abs = expandPath(projectPath, ROOT);
     if (!fs.existsSync(abs)) fail(`경로가 없습니다: ${abs}`);
-    const projects = loadProjects(ROOT);
-    if (!projects[projectId]) {
-      projects[projectId] = { name: o.name || projectId.toUpperCase(), path: abs };
-      saveProjects(ROOT, projects);
-      console.log(`projects.json 에 ${projectId} 추가`);
+    const entry = { name: o.name || projectId.toUpperCase(), path: isPortable(projectPath) ? projectPath : abs };
+    if (o['squad-dir']) entry.squadDir = o['squad-dir'];
+    // --local: 이 PC 전용 projects.local.json(git 제외)에 경로만 덮어쓴다
+    const file = path.join(ROOT, o.local ? 'projects.local.json' : 'projects.json');
+    let projects = {};
+    try {
+      projects = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      // 처음 만듦
     }
-    const squad = path.join(abs, '.squad');
+    if (!projects[projectId] || o.local) {
+      projects[projectId] = o.local ? { ...projects[projectId], path: entry.path, ...(entry.squadDir ? { squadDir: entry.squadDir } : {}) } : entry;
+      fs.writeFileSync(file, JSON.stringify(projects, null, 2) + '\n', 'utf8');
+      console.log(`${path.basename(file)} 에 ${projectId}: ${entry.path}`);
+    }
+    const squad = resolveProject(ROOT, mergedProjects(ROOT)[projectId]).squad;
     const files = {
       'SQUAD.md': `# ${projects[projectId].name} 스쿼드\n\n## 개요\n\n## 멤버\n\n| id | 이름 | 담당 |\n|---|---|---|\n| order | 메인 오더 | 분배·조율 |\n\n## 공용 규칙\n`,
       'tasks.jsonl': '',
@@ -229,6 +245,63 @@ const commands = {
       fs.writeFileSync(f, body, 'utf8');
       console.log(`만듦: ${f}`);
     }
+  },
+
+  async doctor([projectId]) {
+    const projects = mergedProjects(ROOT);
+    const ids = projectId ? [projectId] : Object.keys(projects);
+    if (projectId && !projects[projectId]) fail(`등록되지 않은 프로젝트: ${projectId}`);
+    const rows = [];
+    const add = (what, ok, fix = '') => rows.push([ok === true ? 'OK' : ok === false ? '없음' : '?', what, fix]);
+    const claude = (await runnerStatuses(loadConfig(ROOT), { force: true })).find((r) => r.name === 'claude');
+    add('claude CLI 로그인', claude?.state === 'ok', claude?.state === 'ok' ? '' : `${LOGIN_COMMAND} (설치: npm i -g @anthropic-ai/claude-code)`);
+    const installed = readInstalled();
+    const needHeadroom = new Set();
+    for (const id of ids) {
+      const { path: dir, squad } = resolveProject(ROOT, projects[id]);
+      const there = fs.existsSync(dir);
+      add(`${id} 경로 ${dir}`, there, there ? '' : `node bin/squad.mjs init ${id} <이 PC 의 경로> --local`);
+      if (!there) continue;
+      add(`${id} 작업 공간 신뢰`, isTrusted(dir), isTrusted(dir) ? '' : `cd "${dir}" && claude  (처음 뜨는 신뢰 질문에 Yes)`);
+      const members = loadMembers({ members: path.join(squad, 'members') });
+      add(`${id} 스쿼드 문서 ${squad}`, members.length > 0, members.length ? '' : `SQUAD.md·members/ 를 가져오거나 node bin/squad.mjs init ${id} <경로>`);
+      const seen = new Map();
+      for (const m of members) {
+        if (m.headroom) needHeadroom.add(`${id}/${m.id}`);
+        for (const p of m.plugins) {
+          if (p === 'headroom') needHeadroom.add(`${id}/${m.id}`);
+          else (seen.get(p) || seen.set(p, []).get(p)).push(m.id);
+        }
+      }
+      for (const [p, who] of seen) {
+        const c = checkPlugin(p, installed);
+        add(`${id} 플러그인 ${p} (${who.join(',')})`, c.state === 'ok' ? true : c.state === 'missing' ? false : null, c.hint);
+      }
+    }
+    if (needHeadroom.size) add(`headroom (${[...needHeadroom].slice(0, 3).join(',')}${needHeadroom.size > 3 ? ' 외' : ''})`, hasCommand('headroom'), hasCommand('headroom') ? '' : 'pip install headroom-ai  (또는 MEMBER.md 의 headroom 끄기)');
+    console.log(table([['상태', '점검', '해결'], ...rows]));
+    console.log('\n설치는 하지 않았습니다. 없음 은 위 해결 명령으로, ? 는 이 PC 에서 확인할 수 없는 것(내장 스킬·커넥터)입니다.');
+    if (rows.some((r) => r[0] === '없음')) process.exitCode = 1;
+  },
+
+  migrate([projectId], o) {
+    const projects = mergedProjects(ROOT);
+    if (!isId(projectId) || !projects[projectId]) fail('사용법: migrate <project> [--to squads/<project>] [--yes]');
+    const { squad: src } = resolveProject(ROOT, projects[projectId]);
+    const dst = path.resolve(ROOT, o.to || path.join('squads', projectId));
+    if (path.resolve(src) === dst) return console.log(`이미 ${dst} 를 씁니다`);
+    if (!fs.existsSync(path.join(src, 'SQUAD.md'))) fail(`스쿼드 문서가 없습니다: ${src}`);
+    if (fs.existsSync(dst)) fail(`이미 있습니다: ${dst}`);
+    const files = migrateFiles(src);
+    console.log(`${src}\n→ ${dst}\n${files.map((f) => `  ${f}`).join('\n')}`);
+    if (!o.yes) return console.log('\n(미리보기) 복사하려면 --yes. 원본은 지우지 않고, projects.json 의 squadDir 만 바꿉니다');
+    let r;
+    try {
+      r = migrate({ root: ROOT, id: projectId, src, dst });
+    } catch (e) {
+      fail(e.message);
+    }
+    console.log(`${r.files.length}개 복사, projects.json ${projectId}.squadDir = ${r.squadDir}\n원본 ${src} 는 그대로 있습니다. 보드에서 확인한 뒤 직접 지우세요. *.jsonl 은 git 에 넣지 마세요`);
   },
 
   status([projectId]) {
@@ -607,7 +680,7 @@ const { values, positionals } = parseArgs({
     'details-file': { type: 'string' }, details: { type: 'string' }, 'diff-file': { type: 'string' }, files: { type: 'string' },
     cmd: { type: 'string', multiple: true }, risk: { type: 'string' }, rollback: { type: 'string' },
     text: { type: 'string' }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' }, 'body-file': { type: 'string' },
-    option: { type: 'string', multiple: true }, field: { type: 'string', multiple: true },
+    option: { type: 'string', multiple: true }, 'squad-dir': { type: 'string' }, local: { type: 'boolean' }, yes: { type: 'boolean' }, field: { type: 'string', multiple: true },
   },
 });
 const [cmd = 'help', ...rest] = positionals;
