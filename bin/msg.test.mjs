@@ -12,6 +12,14 @@ test('msg: 멤버에게 온 question 은 답변 작업(easy)을 만든다', () =
   assert.equal(afterMessage({ from: 'ui', to: 'order', kind: 'question', text: 'x' }, ctx).task, undefined);
 });
 
+test('msg: 멤버에게 온 handoff 는 인계 작업(제목=첫 줄, detail=전문·원래 작업)', () => {
+  const r = afterMessage({ from: 'runner', to: 'server', kind: 'handoff', text: 'API 추가 필요\n자세히는 이렇다', taskId: 'T-1' }, ctx);
+  assert.equal(r.task.member, 'server');
+  assert.equal(r.task.title, '인계: API 추가 필요');
+  assert.match(r.task.detail, /원래 작업 T-1[\s\S]*자세히는 이렇다/);
+  assert.equal(afterMessage({ from: 'ui', to: 'order', kind: 'handoff', text: 'x' }, ctx).task, undefined);
+});
+
 test('msg: answer 는 기다리던 원래 작업만 다시 todo', () => {
   const tasks = [
     { id: 'T-1', member: 'ui', status: 'input' },

@@ -21,6 +21,15 @@ export function afterMessage(msg, { tasks = [], workers = [], squadRoot = '', pr
       },
     };
   }
+  if (msg.kind === 'handoff' && workers.includes(msg.to)) {
+    return {
+      task: {
+        title: `인계: ${msg.text.split('\n')[0].trim().slice(0, 80)}`,
+        detail: `${msg.from} 의 인계${msg.taskId ? ` (원래 작업 ${msg.taskId})` : ''}:\n${msg.text}`.slice(0, 2000),
+        member: msg.to,
+      },
+    };
+  }
   if (msg.kind === 'answer' && msg.taskId) {
     const t = tasks.find((x) => x.id === msg.taskId);
     // 사람 입력(task.input)을 기다리는 작업은 보드 답으로만 푼다

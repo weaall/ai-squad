@@ -67,6 +67,7 @@ const HELP = `AI Squad CLI
   auth login                               claude 로그인 (claude auth login)
   msg <project> <from> <to> "<내용>" [--kind note] [--task T-..]
                                            --kind question: 받는 멤버에게 답변 작업(easy)을 만들고 run-queue 를 백그라운드로
+                                           --kind handoff: 받는 멤버에게 인계 작업(제목=첫 줄)을 만들고 run-queue 를 깨움
                                            --kind answer --task T: T 가 답을 기다리면(입력 대기·막힘) 다시 todo
   log <project> <member> "<내용>" [--status working|idle|blocked]
   task add <project> <member> "<제목>" [--detail 내용] [--after T-a,T-b] [--difficulty easy|normal|hard] [--status blocked]   (--after: 먼저 끝나야 하는 작업, --status blocked: 대기열이 집지 않게)
@@ -728,7 +729,7 @@ const commands = {
     }
     if (next.task) {
       const t = addTask(paths, members, next.task, from);
-      console.log(`${to} 에게 답변 작업 ${t.id}`);
+      console.log(`${to} 에게 ${o.kind === 'handoff' ? '인계' : '답변'} 작업 ${t.id}`);
     }
     // 새로 할 일이 생기면 대기열을 깨운다 (order 자동 배정과 같은 방식)
     if (next.task || next.resume) {
