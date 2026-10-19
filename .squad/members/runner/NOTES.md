@@ -1,5 +1,5 @@
 ## 인계 메모
 
-- T-mveqmomm-846f: lib/runners/claude.mjs exec 에 mcp(켠 이름)·maxTurns(기본 40) — 늘 임시 --mcp-config + --strict-mcp-config. modelFor(difficulty, memberModel, config.models)·DEFAULT_MODELS 제공.
-- 남은 것: 연결(runMember mcp·maxTurns·modelFor, 프롬프트 순서·규칙, NOTES 2KB 압축, plan difficulty) → server M-mveqqqfu-8579, 카드 칩 → ui M-mveqqqiq-0ee5. 이전 setup 건 server M-mveqofww-7da2·ui M-mveqofzo-4b70.
-- node --test 90개 통과.
+- T-mveq2ab2-2ec3: 멤버 실행은 이미 loadMembers 실효 headroom(config headroom.default)으로 감쌈. `squad order` 계획 호출도 `--headroom || headroom.default` 로 기본 켬. 미설치면 claude.mjs launcher 가 경고 후 claude 직접 실행.
+- T-mveq2ab2-6235: `squad order` 는 planNeedsConfirm 불필요면 saveOrder 후 detached `run-queue`, 필요하면 이유 출력 뒤 y/N(+--auto).
+- node --test 102개 통과.

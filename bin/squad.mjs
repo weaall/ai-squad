@@ -366,7 +366,7 @@ const commands = {
     if ((await gate(paths, members, 'order', `계획 · ${instruction.slice(0, 80)}`)) !== true) return void (process.exitCode = 1);
     let r;
     try {
-      r = await planOrder({ root: ROOT, paths, members, instruction, headroom: Boolean(o.headroom), stderr: 'inherit' });
+      r = await planOrder({ root: ROOT, paths, members, instruction, headroom: Boolean(o.headroom) || loadConfig(ROOT).headroom.default, stderr: 'inherit' });
     } catch (e) {
       fail(e.message);
     }
