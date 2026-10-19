@@ -423,7 +423,7 @@ export function startBoard({
     }
     if (url.pathname === '/api/stream') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
-      res.write(`retry: 2000\nevent: hello\ndata: ${JSON.stringify({ project })}\n\n`);
+      res.write(`retry: 2000\nevent: hello\ndata: ${JSON.stringify({ project, version: process.env.SQUAD_BOARD_VERSION ?? null })}\n\n`);
       const c = { res, project };
       clients.add(c);
       req.on('close', () => clients.delete(c));
