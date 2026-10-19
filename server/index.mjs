@@ -11,7 +11,8 @@ import {
 import { answerInput, answerText, requestInput, validateInputRequest } from '../lib/input.mjs';
 import { buildState } from '../lib/state.mjs';
 import { validateMessage, validateOrder, validatePlan, validateTask, validateTaskPatch } from '../lib/validate.mjs';
-import { budgetGate, planOrder, saveOrder } from '../lib/runner.mjs';
+import { budgetGate, planOrder, runQueue, saveOrder } from '../lib/runner.mjs';
+import { planNeedsConfirm } from '../lib/confirm.mjs';
 import { addInbox, loadInbox } from '../lib/inbox.mjs';
 import { buildReport, dateKey, isDateKey } from '../lib/report.mjs';
 import { limitsView, loadLimits } from '../lib/limits.mjs';
@@ -104,16 +105,37 @@ function openLoginWindow() {
 /**
  * planner: 계획을 만드는 함수(기본은 메인 AI 를 부르는 planOrder → {plan, usage}). 시험에서는 가짜를 넣는다.
  * token: 접속 토큰(기본은 시작할 때마다 무작위). openLogin: 로그인 창 띄우기, statuses: runner 연결 상태(시험에서는 가짜).
+ * queue: 배정 뒤 백그라운드로 돌릴 대기열(기본 runQueue). planner 를 가짜로 넣은 시험에서는 null — 멤버를 실제로 돌리지 않는다.
  */
 export function startBoard({
   root, port = 4777, demo = false, host = '127.0.0.1', quiet = false, planner = planOrder,
   token = randomBytes(24).toString('base64url'), openLogin = openLoginWindow, statuses = runnerStatuses,
+  queue = planner === planOrder ? runQueue : null,
 }) {
   const cookieName = `squad_t_${port}`; // 쿠키는 포트를 가리지 않아서 이름에 포트를 넣는다
   const authed = (req) => same(readCookie(req.headers.cookie, cookieName), token);
   // ponytail: 서버 전체에 계획 1건만. 프로젝트별로 동시에 돌려야 하면 Map 으로.
   let ordering = false;
   const clients = new Set(); // { res, project }
+  const queues = new Set(); // 대기열이 도는 프로젝트 id
+
+  /** 대기열을 백그라운드로 시작 → 'started' | 'running'(이미 도는 중) | 'off'. 예산 경고는 그 작업만 건너뛴다(확인 패널에 승인 요청이 남는다). */
+  function startQueue(pid, p) {
+    if (!queue) return 'off';
+    if (queues.has(pid)) return 'running';
+    queues.add(pid);
+    const event = (text) => appendJsonl(p.events, { at: new Date().toISOString(), project: pid, member: 'order', type: 'queue', text });
+    const gate = async (subject, what, taskId) => {
+      const g = budgetGate({ root, paths: p, members: loadMembers(p), subject, what, taskId });
+      return g.ok || (g.level === 'over' ? 'over' : false);
+    };
+    Promise.resolve()
+      .then(() => queue({ root, paths: p, loadMembers: () => loadMembers(p), gate, out: () => {} }))
+      .then((r) => event(`대기열 끝: 실행 ${r.ran}건 · 막힘 ${r.blocked}건${r.stoppedBy ? ` · ${r.stoppedBy}로 멈춤` : ''}`))
+      .catch((e) => event(`대기열 실패: ${e.message}`))
+      .finally(() => queues.delete(pid));
+    return 'started';
+  }
   const sigs = new Map();
   const allowedOrigins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
 
@@ -235,7 +257,13 @@ export function startBoard({
           const { plan, usage } = await planner({ root, paths: p, members: loadMembers(p), instruction: v.instruction, stderr: 'pipe' });
           appendJsonl(p.events, { at, project: pid, member: 'order', type: 'plan', text: `계획 ${plan.length}개`, ...(usage ? { usage } : {}) });
           if (!plan.length) return send(res, 502, { error: '메인 오더가 배정할 작업을 내놓지 않았습니다. 지시를 더 구체적으로 써 주세요' });
-          return send(res, 200, { instruction: v.instruction, plan, usage: usage || null });
+          // 사람 확인이 필요 없으면 바로 배정하고 대기열을 백그라운드로 돌린다. 필요하면 확인 대기(확인 패널 → /api/order/confirm)
+          const members = loadMembers(p);
+          const c = planNeedsConfirm({ plan, members, config: loadConfig(root) });
+          const out = { instruction: v.instruction, plan, usage: usage || null, ...c };
+          if (c.needsConfirm) return send(res, 200, out);
+          const tasks = saveOrder({ paths: p, members, instruction: v.instruction, plan });
+          return send(res, 200, { ...out, tasks, queue: startQueue(pid, p) });
         } catch (e) {
           return send(res, 502, { error: `계획을 만들지 못했습니다: ${e.message}` });
         } finally {
@@ -247,7 +275,8 @@ export function startBoard({
         if (o.error) return send(res, 400, o);
         const v = validatePlan(body.plan, ids);
         if (v.error) return send(res, 400, v);
-        return send(res, 201, { tasks: saveOrder({ paths: p, members: loadMembers(p), instruction: o.instruction, plan: v.plan }) });
+        const tasks = saveOrder({ paths: p, members: loadMembers(p), instruction: o.instruction, plan: v.plan });
+        return send(res, 201, { tasks, queue: startQueue(pid, p) });
       }
       if (url.pathname === '/api/approvals/decide') {
         if (typeof body.id !== 'string' || body.id.length > 60) return send(res, 400, { error: '승인 요청 id 가 잘못됐습니다' });
