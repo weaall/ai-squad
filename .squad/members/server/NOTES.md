@@ -1,5 +1,6 @@
 ## 인계 메모
 
+- runQueue 검수(runner.mjs runReview)도 precheck 먼저: pass 면 finishReview 로 LLM 없이 done, 아니면 LLM 검수(routedRunner kind:'review' → LIGHT_KINDS → agy flash).
 - done/cancel 시 멤버의 마지막 이벤트가 start면 end 이벤트(상태 그대로, 텍스트 '사람이 정리') 기록 (server/index.mjs 370-390, lib/blocked.mjs는 순수 함수로 유지).
 - start 후 30분 이상 이벤트 없으면 'unresponsive' 상태로 표시 (memberStatus now/limitMs 추가, buildState에서 호출).
 - 막혀 있던 상태 표시 기능 완성: done/cancel/block 시 멤버 상태 자동 업데이트.
@@ -28,3 +29,4 @@
 - 자동 배정: /api/order 는 planNeedsConfirm 결과(needsConfirm·reasons)를 같이 준다. 확인 불필요면 saveOrder + startQueue(백그라운드 runQueue, 프로젝트당 1개) → 응답 tasks·queue('started'|'running'|'off'). /api/order/confirm 도 저장 뒤 대기열 시작. 끝/실패는 events type 'queue'.
 - startBoard queue 옵션: planner 가짜면 기본 null(시험에서 멤버 실제 실행 안 함). 멤버 프롬프트에 모호하면 `squad ask ... form` 안내 줄 추가.
 - 비용 줄이기: /api/order 도 fastPlan 먼저(plan 이벤트 '빠른 길 → 멤버'). mainAi 기본 claude-sonnet-5-5, planOrder 는 실패·빈 계획이면 Opus(PLAN_RETRY_MODEL) 1회. saveOrder({orderId}) → tasks.orderId·plan 이벤트 orderId, state.orders[orderId]={plan,work,total}. CLI·화면 표시는 runner·ui 인계.
+- 상주 세션·브리프 연결: runMember 가 task 세션 없으면 memberResume(sessionsFile)로 이어 가고(worktree 실행 땐 안 씀·저장도 안 함), 끝나면 saveMemberSession, exec 에 memberBrief 를 brief 로. state.usage.contextStats = startContextStats(tasks) (ui 표시는 인계 필요).

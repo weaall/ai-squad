@@ -30,7 +30,7 @@ plugins:
 
 ## 지금 작업
 
-인계: T-mvexte96-54bd 연결 부탁(lib/runner.mjs runMember): ① 상주 세션 — task 의 saved.sessionI
+인계: runQueue 의 검수(lib/runner.mjs runReview)도 lib/runners/precheck.mjs 의 precheck({me
 
 ## 인계 메모
 
