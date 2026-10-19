@@ -15,6 +15,7 @@ import { validateMessage, validateTask } from '../lib/validate.mjs';
 import { askMainAi, budgetGate, planOrder, runMember, runOrder, runQueue, runReview, saveOrder } from '../lib/runner.mjs';
 import { waitDecision } from '../lib/approvals.mjs';
 import { planNeedsConfirm } from '../lib/confirm.mjs';
+import { fastPlan } from '../lib/runners/fastpath.mjs';
 import { addInbox, doneInbox, INBOX_LABEL, loadInbox, takeInbox } from '../lib/inbox.mjs';
 import { buildReport, dateKey, isDateKey, polishPrompt } from '../lib/report.mjs';
 import { capture, captureName } from '../lib/capture.mjs';
@@ -403,14 +404,18 @@ const commands = {
     if (!instruction) fail('사용법: order <project> "<지시>" [--dry] [--auto]');
     const { paths, members } = ctx(projectId);
     if ((await gate(paths, members, 'order', `계획 · ${instruction.slice(0, 80)}`)) !== true) return void (process.exitCode = 1);
-    let r;
-    try {
-      r = await planOrder({ root: ROOT, paths, members, instruction, stderr: 'inherit' });
-    } catch (e) {
-      fail(e.message);
+    // 한 멤버 일로 분명하면 계획 LLM 을 부르지 않는다(빠른 길)
+    const fast = fastPlan(instruction, members);
+    let r = fast && { plan: [fast], usage: null };
+    if (!r) {
+      try {
+        r = await planOrder({ root: ROOT, paths, members, instruction, stderr: 'inherit' });
+      } catch (e) {
+        fail(e.message);
+      }
     }
     const { plan, usage } = r;
-    emit(paths, 'order', { type: 'plan', text: `계획 ${plan.length}개`, ...(usage ? { usage } : {}) });
+    emit(paths, 'order', { type: 'plan', text: fast ? `빠른 길 → ${fast.member}` : `계획 ${plan.length}개`, ...(usage ? { usage } : {}) });
     if (!plan.length) fail('메인 AI 가 배정할 작업을 내놓지 않았습니다. 지시를 더 구체적으로 써 주세요');
     const ordered = runOrder(plan);
     for (const p of ordered) console.log(`- [${p.step}] ${p.member}: ${p.title}${p.why ? `  (${p.why})` : ''}`);
