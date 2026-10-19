@@ -182,13 +182,14 @@ function render() {
   const tt = d.tokensToday || { total: 0 };
   const bd = d.budget || { daily: 0, ratio: 0 };
   const lv = budgetLevel(bd.ratio, bd.warn);
-  const tip = `입력 ${fmtTok(tt.input)} · 출력 ${fmtTok(tt.output)} · 캐시 읽기 ${fmtTok(tt.cacheRead)} · 캐시 쓰기 ${fmtTok(tt.cacheWrite)}${tt.costUsd !== undefined ? ` · US$${tt.costUsd}` : ''}${bd.daily ? ` · 하루 상한 ${fmtTok(bd.daily)} (${Math.round(bd.ratio * 100)}%)` : ' · 상한 없음'}${bd.task ? ` · 작업당 ${fmtTok(bd.task)}` : ''}`;
+  // 쓸 수 있는 양으로 오해하지 않게: 오늘 쓴 양만 보여 주고 남은 한도는 Claude 앱으로 안내한다
+  const tip = `오늘 사용 — 예산 기준(비용 환산) ${fmtTok(tt.budgetTokens)} · 전체 토큰 ${fmtTok(tt.total)}${tt.costUsd !== undefined ? ` · 비용 US$${tt.costUsd}` : ''}\n입력 ${fmtTok(tt.input)} · 출력 ${fmtTok(tt.output)} · 캐시 읽기 ${fmtTok(tt.cacheRead)} · 캐시 쓰기 ${fmtTok(tt.cacheWrite)}${bd.daily ? `\n하루 상한 ${fmtTok(bd.daily)} (${Math.round(bd.ratio * 100)}%)` : ''}${bd.task ? ` · 작업당 ${fmtTok(bd.task)}` : ''}\n남은 한도는 Claude 앱 사용량 화면에서 확인`;
   $('#stats').innerHTML = [
     ['is-working', '일하는 중', d.counts.working],
     ['', '대기', d.counts.pending + (d.counts.review ? ` · 검수 ${d.counts.review}` : '')],
     ['is-blocked', '막힘', d.counts.blocked],
   ].map(([c, l, n]) => `<span class="stat ${c}">${l} <b>${n}</b></span>`).join('') +
-    `<span class="stat tok-chip lv-${lv}" title="${esc(tip)}">토큰 <b>${fmtShort(tt.total)}</b>${bd.daily ? `<span class="bar" role="meter" aria-label="오늘 토큰 사용률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round(bd.ratio * 100))}"><i style="width:${Math.min(100, bd.ratio * 100).toFixed(1)}%"></i></span><small>/ ${fmtShort(bd.daily)}</small>` : ''}</span>`;
+    `<span class="stat tok-chip lv-${lv}" title="${esc(tip)}">오늘 사용 <b>${fmtShort(tt.total)}</b>${bd.daily ? `<span class="bar" role="meter" aria-label="오늘 토큰 사용률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round(bd.ratio * 100))}"><i style="width:${Math.min(100, bd.ratio * 100).toFixed(1)}%"></i></span><small>/ ${fmtShort(bd.daily)}</small>` : ''}</span>`;
   applyFx();
   fillSelects();
   renderInbox();
