@@ -1,0 +1,6 @@
+# 실행 기록·로그·시연 데이터는 저장소에 넣지 않는다
+data/
+logs/
+node_modules/
+.claude/
+*.tmp
