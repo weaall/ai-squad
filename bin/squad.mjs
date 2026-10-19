@@ -3,17 +3,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
-  appendJsonl, isId, loadMembers, loadProjects, memberFile, newId, projectPaths, readJsonl,
-  readMemberDocs, saveProjects, updateTask,
+  appendJsonl, isId, loadMembers, loadProjects, memberFile, newId, projectPaths, readJsonl, saveProjects, updateTask,
 } from '../lib/store.mjs';
 import { setSection } from '../lib/md.mjs';
-import { STATUS_LABEL, buildState, describeEvent } from '../lib/state.mjs';
+import { STATUS_LABEL, buildState, describeEvent, tokenTotal } from '../lib/state.mjs';
 import { validateMessage, validateTask } from '../lib/validate.mjs';
-import { buildRunPrompt, readStreamLine } from '../lib/claude.mjs';
-import { planOrder, saveOrder, spawnClaude } from '../lib/runner.mjs';
+import { planOrder, runMember, runOrder, saveOrder } from '../lib/runner.mjs';
+import { loadConfig } from '../lib/config.mjs';
+import { runnerStatuses, LOGIN_COMMAND } from '../lib/runners/index.mjs';
+import { setSecret, secretsFile } from '../lib/secrets.mjs';
+import { ACTIONS, DECISIONS, decideApproval, decisionText, loadApprovals, requestApproval, validateApprovalRequest } from '../lib/approvals.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const now = () => new Date().toISOString();
@@ -22,8 +25,17 @@ const HELP = `AI Squad CLI
 
   init <project> <path> [--name 이름]     .squad 뼈대와 projects.json 항목 만들기
   status [project]                         멤버별 상태 표
-  order <project> "<지시>" [--dry] [--headroom]   메인 오더가 작업을 나눠 배정 (claude 호출)
-  run <project> <member> [taskId] [--headroom]    멤버에게 작업 실행 (claude -p, 선택: headroom 으로 감싸기)
+  order <project> "<지시>" [--dry] [--auto] [--headroom]
+                                           메인 AI(squad.config.json mainAi)가 계획·실행 순서를 만들고, 사람이 승인하면 배정
+                                           --dry: 계획만 / --auto: 승인 뒤 배정하고, 한 번 더 승인하면 순서대로 실행
+  run <project> <member> [taskId] [--headroom]    멤버에게 작업 실행 (MEMBER.md 의 runner)
+  approve request <project> <from> <push|deploy|migrate|send|delete> "<무엇을>" [--reason 이유] [--scope 저장소·경로] [--task T-..]
+  approve list <project>                   승인 대기 목록 (approve 명령은 --demo 면 시연 파일에)
+  approve yes|no <project> <approvalId> [--reason 사유]   승인·거절 (요청한 멤버에게 answer 메시지)
+  auth status                              runner 별 연결 상태
+  auth set <runner>                        외부 runner 의 API 키 넣기 (입력이 화면에 보이지 않음)
+  auth clear <runner>                      저장한 키 지우기
+  auth login                               claude 로그인 (claude auth login)
   msg <project> <from> <to> "<내용>" [--kind note] [--task T-..]
   log <project> <member> "<내용>" [--status working|idle|blocked]
   task add <project> <member> "<제목>" [--detail 내용]
@@ -85,6 +97,58 @@ function table(rows) {
   return rows.map((r) => r.map((c, i) => pad(c, ws[i])).join('  ').trimEnd()).join('\n');
 }
 
+// ── 터미널 묻기 ──
+/** y/N 질문. 터미널이 아니면(파이프·다른 프로그램) 승인으로 보지 않는다. */
+async function ask(q) {
+  if (!process.stdin.isTTY) {
+    console.log(`${q}→ 터미널이 아니라 승인할 수 없습니다`);
+    return false;
+  }
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const a = await new Promise((r) => rl.question(q, r));
+  rl.close();
+  return /^(y|yes|예|네)$/i.test(a.trim());
+}
+
+/** 입력이 화면에 보이지 않게 한 줄 받는다. 파이프로 들어오면 첫 줄. */
+function hidden(q) {
+  const input = process.stdin;
+  if (!input.isTTY) {
+    return new Promise((resolve) => {
+      let buf = '';
+      input.setEncoding('utf8');
+      input.on('data', (d) => (buf += d));
+      input.on('end', () => resolve(buf.split(/\r?\n/)[0] || ''));
+    });
+  }
+  process.stdout.write(q);
+  return new Promise((resolve) => {
+    let buf = '';
+    const done = (v) => {
+      input.setRawMode(false);
+      input.pause();
+      input.off('data', onData);
+      process.stdout.write('\n');
+      resolve(v);
+    };
+    const onData = (chunk) => {
+      for (const c of chunk) {
+        if (c === '\r' || c === '\n') return done(buf);
+        if (c === '\u0003') {
+          done('');
+          return process.exit(130);
+        }
+        if (c === '\u007f' || c === '\b') buf = buf.slice(0, -1);
+        else if (c >= ' ') buf += c;
+      }
+    };
+    input.setRawMode(true);
+    input.setEncoding('utf8');
+    input.on('data', onData);
+    input.resume();
+  });
+}
+
 // ── 명령 ──
 const commands = {
   help() {
@@ -123,82 +187,131 @@ const commands = {
     for (const id of ids) {
       const { paths, members } = ctx(id);
       const st = buildState({
-        project: paths, members, tasks: readJsonl(paths.tasks), messages: [], events: readJsonl(paths.events),
+        project: paths, members, tasks: readJsonl(paths.tasks), messages: readJsonl(paths.messages), events: readJsonl(paths.events),
+        approvals: loadApprovals(paths), stale: loadConfig(ROOT).stale,
       });
-      console.log(`\n${paths.name} — 일하는 중 ${st.counts.working} · 대기 작업 ${st.counts.pending} · 막힘 ${st.counts.blocked}`);
-      const rows = [['id', '이름', '상태', '지금 작업', '대기', '마지막 이벤트']];
+      const c = st.counts;
+      console.log(`\n${paths.name} — 일하는 중 ${c.working} · 대기 작업 ${c.pending} · 막힘 ${c.blocked} · 승인 대기 ${c.approvals} · 멈춤 ${c.stalled} · 답 없는 인계 ${c.unanswered} · 오늘 ${st.tokensToday.total.toLocaleString('ko-KR')}토큰`);
+      const rows = [['id', '이름', '상태', '지금 작업', '대기', '주의', '마지막 이벤트']];
       for (const m of st.members) {
-        rows.push([m.id, m.name, STATUS_LABEL[m.status], cut(m.current || '-', 30), String(m.pending), cut(m.lastEvent ? describeEvent(m.lastEvent) : '-', 36)]);
+        const warn = [m.stalled && '멈춤', m.unanswered && `답 없음 ${m.unanswered}`].filter(Boolean).join(' ') || '-';
+        rows.push([m.id, m.name, STATUS_LABEL[m.status], cut(m.current || '-', 30), String(m.pending), warn, cut(m.lastEvent ? describeEvent(m.lastEvent) : '-', 36)]);
       }
       console.log(table(rows));
     }
   },
 
   async order([projectId, instruction], o) {
-    if (!instruction) fail('사용법: order <project> "<지시>" [--dry]');
+    if (!instruction) fail('사용법: order <project> "<지시>" [--dry] [--auto]');
     const { paths, members } = ctx(projectId);
-    let plan;
+    let r;
     try {
-      plan = await planOrder({ root: ROOT, paths, members, instruction, headroom: Boolean(o.headroom) });
+      r = await planOrder({ root: ROOT, paths, members, instruction, headroom: Boolean(o.headroom), stderr: 'inherit' });
     } catch (e) {
       fail(e.message);
     }
-    for (const p of plan) console.log(`- ${p.member}: ${p.title}${p.why ? `  (${p.why})` : ''}`);
+    const { plan, usage } = r;
+    emit(paths, 'order', { type: 'plan', text: `계획 ${plan.length}개`, ...(usage ? { usage } : {}) });
+    if (!plan.length) fail('메인 AI 가 배정할 작업을 내놓지 않았습니다. 지시를 더 구체적으로 써 주세요');
+    const ordered = runOrder(plan);
+    for (const p of ordered) console.log(`- [${p.step}] ${p.member}: ${p.title}${p.why ? `  (${p.why})` : ''}`);
+    if (usage) console.log(`(계획 ${tokenTotal(usage).toLocaleString('ko-KR')}토큰)`);
     if (o.dry) return console.log('(--dry: 저장하지 않음)');
+    // 자동 배정은 하지 않는다: 늘 사람이 이 터미널에서 승인해야 저장한다
+    if (!(await ask(`작업 ${plan.length}개를 이대로 배정할까요? [y/N] `))) return console.log('배정하지 않았습니다');
+    let tasks;
     try {
-      saveOrder({ paths, members, instruction, plan });
+      tasks = saveOrder({ paths, members, instruction, plan: ordered });
     } catch (e) {
       fail(e.message);
     }
-    console.log(`작업 ${plan.length}개를 배정했습니다`);
+    console.log(`작업 ${tasks.length}개를 배정했습니다. 실행 순서:`);
+    for (const t of tasks) console.log(`  [${t.step}] node bin/squad.mjs run ${paths.id} ${t.member} ${t.id}`);
+    if (!o.auto) return;
+    if (!(await ask('이 순서대로 지금 실행할까요? [y/N] '))) return console.log('실행하지 않았습니다. 위 명령으로 하나씩 실행하세요');
+    // ponytail: 같은 step 도 하나씩 차례로 돈다. 동시에 돌려야 하면 step 묶음별 Promise.all.
+    for (const t of tasks) {
+      const m = members.find((x) => x.id === t.member);
+      if (m.runner === 'external') {
+        console.log(`건너뜀: ${m.name} — runner=external 이라 사람이 넘겨 주세요`);
+        continue;
+      }
+      const res = await runMember({ root: ROOT, paths, member: m, task: t, headroom: Boolean(o.headroom) });
+      console.log(res.ok ? `완료: ${res.summary}` : `막힘: ${res.summary}`);
+      if (!res.ok) {
+        process.exitCode = 1;
+        return console.log('막힌 작업이 있어 뒤 순서는 멈췄습니다');
+      }
+    }
   },
 
   async run([projectId, memberId, taskId], o) {
     const { paths, members } = ctx(projectId);
     const m = members.find((x) => x.id === memberId);
     if (!m) fail(`멤버가 없습니다: ${memberId}`);
-    if (m.runner !== 'claude') fail(`${m.name} 은(는) runner=${m.runner} 라 CLI 가 실행하지 않습니다`);
+    if (m.runner === 'external') fail(`${m.name}: runner=external 이라 CLI 가 실행하지 않습니다`);
+    if (!loadConfig(ROOT).runners[m.runner]) fail(`${m.name}: runner=${m.runner} 가 squad.config.json 의 runners 에 없습니다`);
     const tasks = readJsonl(paths.tasks);
     const task = taskId ? tasks.find((t) => t.id === taskId) : tasks.find((t) => t.member === m.id && t.status === 'todo');
-    if (!task) fail(taskId ? `작업이 없습니다: ${taskId}` : `${m.name} 의 todo 작업이 없습니다`);
+    if (!task) fail(taskId ? `작업이 없습니다: ${taskId}` : `${m.name}: 할 일(todo) 작업이 없습니다`);
+    const res = await runMember({ root: ROOT, paths, member: m, task, headroom: Boolean(o.headroom) });
+    if (res.outside.length) console.log(`경고: 맡은 경로 밖 수정 ${res.outside.length}건 — 작업을 막힘으로 바꾸고 메인 오더에게 알렸습니다`);
+    console.log(res.ok ? `완료: ${res.summary}` : `막힘: ${res.summary}`);
+    if (!res.ok) process.exitCode = 1;
+  },
 
-    const docs = readMemberDocs(paths, m.id);
-    const prompt = buildRunPrompt({ memberMd: docs.member, notesMd: docs.notes, task, squadRoot: ROOT, project: paths.id, member: m.id });
-    const tools = m.tools.length ? m.tools : ['Read', 'Edit', 'Write', 'Glob', 'Grep'];
-    const args = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', tools.join(',')];
-    if (m.model) args.push('--model', m.model);
-
-    updateTask(paths.tasks, task.id, { status: 'doing' });
-    setCurrent(paths, m.id, task.title);
-    emit(paths, m.id, { type: 'start', taskId: task.id, text: task.title });
-    const logFile = path.join(paths.logs, m.id, `${task.id}.log`);
-    fs.mkdirSync(path.dirname(logFile), { recursive: true });
-    const log = fs.createWriteStream(logFile);
-    console.log(`${m.name} 실행 — ${task.title}\n원본 로그: ${logFile}`);
-
-    const child = spawnClaude(args, prompt, paths.path, Boolean(o.headroom) || m.headroom);
-    let result = null;
-    for await (const line of readline.createInterface({ input: child.stdout })) {
-      log.write(line + '\n');
-      const r = readStreamLine(line, paths.path);
-      if (!r) continue;
-      for (const t of r.tools) {
-        emit(paths, m.id, { type: 'tool', taskId: task.id, tool: t.tool, path: t.path });
-        console.log(`  ${describeEvent({ type: 'tool', ...t })}`);
-      }
-      if (r.result) result = r.result;
+  approve([sub, projectId, a, b, c], o) {
+    const { paths, members } = ctx(projectId, { demo: Boolean(o.demo) }); // --demo: 시연 파일에만
+    if (sub === 'request') {
+      const v = validateApprovalRequest({ from: a, action: b, text: c, reason: o.reason, scope: o.scope, taskId: o.task }, members.map((m) => m.id));
+      if (v.error) fail(v.error);
+      const r = requestApproval(paths, v);
+      emit(paths, v.from, { type: 'log', status: 'blocked', text: `승인 대기 · ${ACTIONS[v.action]}` });
+      return console.log(`승인 요청 ${r.id} — 보드의 "승인 대기"나 approve yes|no 로 결정합니다. 결정 전에는 그 행위를 하지 마세요`);
     }
-    const code = await new Promise((res) => (child.exitCode !== null ? res(child.exitCode) : child.on('close', res)));
-    log.end();
+    if (sub === 'list') {
+      const list = loadApprovals(paths).filter((x) => x.status === 'pending');
+      if (!list.length) return console.log('승인 대기가 없습니다');
+      return console.log(table([['id', '요청', '행위', '내용'], ...list.map((x) => [x.id, x.from, ACTIONS[x.action], cut(x.text, 50)])]));
+    }
+    if (sub === 'yes' || sub === 'no') {
+      let d;
+      try {
+        d = decideApproval(paths, a, sub === 'yes' ? 'approved' : 'rejected', 'human', o.reason || '');
+      } catch (e) {
+        fail(e.message);
+      }
+      addMessage(paths, members, { from: 'human', to: d.from, kind: 'answer', taskId: d.taskId, text: decisionText(d) });
+      return console.log(`${d.id} → ${DECISIONS[d.status]}`);
+    }
+    fail('사용법: approve request|list|yes|no ...');
+  },
 
-    const ok = code === 0 && result && !result.isError;
-    const summary = (result?.text || `종료 코드 ${code}`).slice(0, 2000);
-    updateTask(paths.tasks, task.id, { status: ok ? 'done' : 'blocked', summary });
-    addMessage(paths, members, { from: m.id, to: 'order', kind: 'report', taskId: task.id, text: summary });
-    setCurrent(paths, m.id, '');
-    emit(paths, m.id, { type: 'end', taskId: task.id, status: ok ? 'idle' : 'blocked', text: ok ? '완료' : '막힘' });
-    console.log(ok ? `완료: ${summary}` : `막힘: ${summary}`);
-    if (!ok) process.exitCode = 1;
+  async auth([sub, name]) {
+    const config = loadConfig(ROOT);
+    if (sub === 'status' || !sub) {
+      const list = await runnerStatuses(config, { force: true });
+      const rows = list.map((r) => [r.name + (r.main ? ' (메인)' : ''), r.type, r.stateLabel, r.secretSet === undefined ? '-' : r.secretSet ? '설정됨' : '없음', cut(r.detail || '-', 44)]);
+      return console.log(table([['runner', '종류', '상태', '키', '비고'], ...rows]));
+    }
+    if (sub === 'login') {
+      console.log(`claude 로그인: ${LOGIN_COMMAND} (브라우저에서 로그인하세요)`);
+      return void spawnSync(LOGIN_COMMAND, { shell: true, stdio: 'inherit' });
+    }
+    if (sub === 'set' || sub === 'clear') {
+      const r = config.runners[name];
+      if (!r) fail(`runner 가 없습니다: ${name}`);
+      if (!r.secret) fail(`${name}: 키를 쓰지 않는 runner 입니다 (squad.config.json 에 secret 이 없음)`);
+      if (sub === 'clear') {
+        setSecret(name, '');
+        return console.log(`${name} 키를 지웠습니다`);
+      }
+      const v = (await hidden(`${name} 키 (입력이 보이지 않습니다): `)).trim();
+      if (!v) fail('키가 비었습니다. 저장하지 않았습니다');
+      setSecret(name, v);
+      return console.log(`${name} 키를 저장했습니다 → ${secretsFile()}`);
+    }
+    fail('사용법: auth status|set|clear|login [runner]');
   },
 
   msg([projectId, from, to, text], o) {
@@ -248,7 +361,7 @@ const { values, positionals } = parseArgs({
   options: {
     dry: { type: 'boolean' }, headroom: { type: 'boolean' }, demo: { type: 'boolean' }, port: { type: 'string' }, kind: { type: 'string' },
     task: { type: 'string' }, status: { type: 'string' }, detail: { type: 'string' }, summary: { type: 'string' },
-    reason: { type: 'string' }, name: { type: 'string' },
+    reason: { type: 'string' }, name: { type: 'string' }, auto: { type: 'boolean' }, scope: { type: 'string' },
   },
 });
 const [cmd = 'help', ...rest] = positionals;

@@ -4,3 +4,6 @@ logs/
 node_modules/
 .claude/
 *.tmp
+
+# 외부 runner 키는 %APPDATA%i-squad\secrets.json 에 둔다. 혹시 저장소에 만들어도 올리지 않는다
+.squad-secrets.json

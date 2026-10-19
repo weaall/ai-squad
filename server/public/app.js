@@ -5,6 +5,10 @@ const STATUS = { working: '일하는 중', idle: '대기', blocked: '막힘' };
 const KIND = { order: '지시', handoff: '인계', question: '질문', answer: '답변', report: '완료 보고', note: '메모' };
 const TASK_COLS = [['todo', '할 일'], ['doing', '진행 중'], ['blocked', '막힘'], ['done', '완료']];
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const ACTION = { push: 'push', deploy: '배포', migrate: 'DB 마이그레이션', send: '외부 발송', delete: '삭제' };
+const LITE_MEMBERS = 12; // 이보다 많으면 저절로 가벼운 효과
+const MAX_PARTICLES = 30;
+const MAX_RIPPLES = 12;
 
 const ui = {
   projects: [],
@@ -14,7 +18,10 @@ const ui = {
   tab: 'squad',
   selected: null,
   openRows: new Set(),
-  openTech: new Set(),
+  techOpen: null, // 사용 기술 팝오버가 열린 멤버 id
+  runners: [],
+  later: new Set(), // 확인 모달에서 [나중에]로 미룬 것
+  seenConfirm: new Set(), // 이미 한 번 띄운 확인 — 새로 들어온 것만 모달을 연다
   frame: 0,
   seenMsgs: null,
   seenEvents: null,
@@ -54,7 +61,7 @@ function avatar(id, size = '') {
 }
 /** 화면의 모든 캐릭터를 지금 프레임으로 그린다. 움직임 줄이기면 늘 0 프레임. */
 function paintSprites() {
-  const frame = reduceMotion.matches ? 0 : ui.frame;
+  const frame = lite() ? 0 : ui.frame;
   for (const c of document.querySelectorAll('canvas[data-sprite]')) {
     const id = c.dataset.sprite;
     const st = member(id)?.status || 'idle';
@@ -66,10 +73,19 @@ function paintSprites() {
     c.dataset.drawn = key;
   }
 }
-const techCount = (m) => (m.model ? 1 : 0) + (m.runner !== 'claude' ? 1 : 0) + m.tools.length + m.plugins.length;
+// 켜고 끌 수 있는 기술 = 플러그인·스킬·MCP + headroom
+const techOn = (m) => (m.pluginList || []).filter((p) => p.on).length + (m.headroom ? 1 : 0);
+const techAll = (m) => (m.pluginList || []).length + 1;
+const techCount = (m) => `${techOn(m)} / ${techAll(m)}`;
+const fmtTok = (n) => (n || 0).toLocaleString('ko-KR');
+const usageTotal = (u) => (u ? (u.input || 0) + (u.output || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0) : 0);
 function techBlock(m) {
+  const sw = (kind, name, on, label) =>
+    `<label class="switch"><input type="checkbox" role="switch" data-toggle="${kind}" data-member="${esc(m.id)}" data-name="${esc(name)}"${on ? ' checked' : ''}><span class="switch-ui" aria-hidden="true"></span><span class="switch-label" title="${esc(label)}">${esc(label)}</span></label>`;
   return `<dl class="kv"><dt>실행</dt><dd>${esc(m.runner)}</dd><dt>모델</dt><dd>${esc(m.model || '기본값')}</dd><dt>도구</dt><dd>${esc(m.tools.join(', ') || '기본(Read·Edit·Write·Glob·Grep)')}</dd></dl>
-    ${m.plugins.length ? `<div class="chips">${m.plugins.map((p) => `<span class="chip">${esc(p)}</span>`).join('')}</div>` : '<p class="muted small">플러그인·스킬·MCP 없음</p>'}`;
+    <p class="muted small">켜진 것만 실행 프롬프트에 들어갑니다</p>
+    <div class="switches">${sw('headroom', '', m.headroom, 'headroom (토큰 압축으로 감싸기)')}${(m.pluginList || []).map((p) => sw('plugin', p.name, p.on, p.name)).join('')}</div>
+    ${(m.pluginList || []).length ? '' : '<p class="muted small">플러그인·스킬·MCP 없음</p>'}`;
 }
 const pill = (s) => `<span class="pill st-${s}"><i class="dot st-${s}"></i>${STATUS[s] || s}</span>`;
 const kindTag = (k) => `<span class="kind" style="--kc:var(--k-${esc(k)})">${esc(KIND[k] || k)}</span>`;
@@ -95,6 +111,11 @@ function toast(text) {
 async function api(url, body) {
   const res = await fetch(url, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined);
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    // 접속 토큰(쿠키)이 없다 — 터미널에 찍힌 ?t= 주소로 다시 열어야 한다
+    $('#auth-banner').hidden = false;
+    source?.close();
+  }
   if (!res.ok) throw new Error(data.error || `요청 실패 (${res.status})`);
   return data;
 }
@@ -117,6 +138,7 @@ async function load() {
       net.sync(data, first);
       for (const m of fresh) net.message(m);
       for (const e of freshEvents) net.event(e);
+      syncConfirm();
     } catch (e) {
       toast(e.message);
     } finally {
@@ -148,13 +170,18 @@ function render() {
   const d = ui.data;
   if (!d) return;
   $('#demo-badge').hidden = !d.demo;
+  const tt = d.tokensToday || { total: 0 };
   $('#stats').innerHTML = [
     ['is-working', '일하는 중', d.counts.working],
     ['', '대기 작업', d.counts.pending],
     ['is-blocked', '막힘', d.counts.blocked],
-  ].map(([c, l, n]) => `<span class="stat ${c}">${l} <b>${n}</b></span>`).join('');
+    ['', '오늘 토큰', fmtTok(tt.total), `입력 ${fmtTok(tt.input)} · 출력 ${fmtTok(tt.output)} · 캐시 읽기 ${fmtTok(tt.cacheRead)} · 캐시 쓰기 ${fmtTok(tt.cacheWrite)}${tt.costUsd !== undefined ? ` · $${tt.costUsd}` : ''}`],
+  ].map(([c, l, n, t]) => `<span class="stat ${c}"${t ? ` title="${esc(t)}"` : ''}>${l} <b>${n}</b></span>`).join('');
+  applyFx();
   fillSelects();
+  renderApprovals();
   renderCards();
+  refreshTech();
   renderRows();
   renderKanban();
   renderConvo();
@@ -187,20 +214,26 @@ function fillSelects() {
 function renderCards() {
   const html = ui.data.members.map((m) => {
     const ev = m.lastEvent;
-    const n = techCount(m);
-    const open = ui.openTech.has(m.id);
-    return `<article class="card st-${m.status}${ui.selected === m.id ? ' is-selected' : ''}" data-member="${esc(m.id)}">
+    const open = ui.techOpen === m.id;
+    return `<article class="card st-${m.status}${m.stalled ? ' is-stalled' : ''}${ui.selected === m.id ? ' is-selected' : ''}" data-member="${esc(m.id)}">
       <div class="card-head">${avatar(m.id)}
         <div class="card-who"><button type="button" class="link card-name" data-open="${esc(m.id)}">${esc(m.name)}</button>
-        <div class="card-id">${esc(m.id)}${m.pending ? ` · 대기 ${m.pending}` : ''}</div></div>${pill(m.status)}</div>
+        <div class="card-id">${esc(m.id)}${m.pending ? ` · 대기 ${m.pending}` : ''}${flags(m)}</div></div>${pill(m.status)}</div>
       <button type="button" class="card-task${m.current ? '' : ' is-empty'}" data-open="${esc(m.id)}" aria-label="${esc(m.name)} 자세히: ${esc(m.current || '맡은 작업 없음')}">${esc(m.current || '맡은 작업 없음')}</button>
       <div class="card-event">${ev ? `<span title="${esc(eventLabel(ev))}">${esc(eventLabel(ev))}</span><time datetime="${esc(ev.at)}" title="${esc(fullTime(ev.at))}">${rel(ev.at)}</time>` : '<span>이벤트 없음</span>'}</div>
-      <button type="button" class="tech-toggle" data-tech="${esc(m.id)}" aria-expanded="${open}" aria-controls="tech-${esc(m.id)}">사용 기술 ${n}개 ${ICON_CHEV}</button>
-      <div class="tech" id="tech-${esc(m.id)}"${open ? '' : ' hidden'}>${techBlock(m)}</div>
+      <div class="card-foot">
+        <button type="button" class="tech-toggle" data-tech="${esc(m.id)}" aria-expanded="${open}" aria-haspopup="dialog" aria-controls="tech-pop">켜진 기술 ${techCount(m)} ${ICON_CHEV}</button>
+        <span class="tok" title="이번 작업에 쓴 토큰(입력·출력·캐시). 오늘 ${fmtTok(m.tokens?.today)} · 누적 ${fmtTok(m.tokens?.all)}">이번 작업 ${fmtTok(m.tokens?.task)}토큰</span>
+      </div>
     </article>`;
   }).join('');
   $('#cards').innerHTML = html || '<p class="empty">멤버가 없습니다. <code>node bin/squad.mjs init</code> 으로 스쿼드를 만드세요.</p>';
 }
+
+/** 뒤처짐 표시: 멈춤, 답 없는 인계 */
+const flags = (m) =>
+  (m.stalled ? '<span class="flag is-stalled" title="할 일이 있는데 오래 움직이지 않았습니다">멈춤</span>' : '') +
+  (m.unanswered ? `<span class="flag is-wait" title="받은 인계·질문에 오래 답하지 않았습니다">답 없는 인계 ${m.unanswered}</span>` : '');
 
 function eventList(events, n) {
   const list = events.slice(-n).reverse();
@@ -226,7 +259,7 @@ function renderRows() {
     return `<details class="row" data-member="${esc(m.id)}"${ui.openRows.has(m.id) ? ' open' : ''}>
       <summary>
         ${avatar(m.id)}
-        <span class="row-name">${esc(m.name)}<small>${esc(m.id)}</small></span>
+        <span class="row-name">${esc(m.name)}<small>${esc(m.id)}${flags(m)}</small></span>
         ${pill(m.status)}
         <span class="row-cell${m.current ? '' : ' is-empty'}" title="${esc(m.current)}">${esc(m.current || '맡은 작업 없음')}</span>
         <span class="row-cell${ev ? '' : ' is-empty'}">${ev ? `${esc(eventLabel(ev))}<time>${rel(ev.at)}</time>` : '이벤트 없음'}</span>
@@ -235,7 +268,7 @@ function renderRows() {
       </summary>
       <div class="row-body">
         <div>
-          <h3>사용 기술 ${techCount(m)}</h3>${techBlock(m)}
+          <h3>켜진 기술 ${techCount(m)}</h3>${techBlock(m)}
           <h3>담당 경로</h3>${pathList(m.owns)}
         </div>
         <div>
@@ -265,6 +298,7 @@ function renderKanban() {
       ${list.map((t) => `<article class="tcard" data-task="${esc(t.id)}">
         <div class="tcard-title">${esc(t.title)}</div>
         ${t.summary || t.detail ? `<div class="tcard-sum" title="${esc(t.summary || t.detail)}">${esc(t.summary || t.detail)}</div>` : ''}
+        ${t.usage ? `<div class="tok" title="이 작업에 쓴 토큰">${fmtTok(usageTotal(t.usage))}토큰</div>` : ''}
         <div class="tcard-foot">${avatar(t.member, 'sm')}
           <select class="select" data-field="member" aria-label="담당 바꾸기">${memberOpts(t.member)}</select>
           <select class="select st" data-field="status" aria-label="상태 바꾸기">${statusOpts(t.status)}</select>
@@ -279,11 +313,12 @@ function renderConvo() {
   const box = $('#convo');
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
   const msgs = ui.data.messages.slice(-120);
-  $('#convo-count').textContent = ui.data.messages.length ? `${ui.data.messages.length}개` : '';
-  box.innerHTML = msgs.map((m) => `<li class="msg${ui.newMsgIds.has(m.id) ? ' is-new' : ''}">
+  const wait = new Set(ui.data.unanswered || []);
+  $('#convo-count').innerHTML = (ui.data.messages.length ? `${ui.data.messages.length}개` : '') + (wait.size ? ` <span class="flag is-wait">답 없는 인계 ${wait.size}</span>` : '');
+  box.innerHTML = msgs.map((m) => `<li class="msg${ui.newMsgIds.has(m.id) ? ' is-new' : ''}${wait.has(m.id) ? ' is-wait' : ''}">
     ${avatar(m.from, 'sm')}
     <div>
-      <div class="msg-meta"><b>${esc(nameOf(m.from))}</b>${ICON_ARROW}<b>${esc(nameOf(m.to))}</b>${kindTag(m.kind)}<time title="${esc(fullTime(m.at))}">${rel(m.at)}</time></div>
+      <div class="msg-meta"><b>${esc(nameOf(m.from))}</b>${ICON_ARROW}<b>${esc(nameOf(m.to))}</b>${kindTag(m.kind)}${wait.has(m.id) ? '<span class="flag is-wait">답 없는 인계</span>' : ''}<time title="${esc(fullTime(m.at))}">${rel(m.at)}</time></div>
       <div class="msg-text">${esc(m.text)}</div>
       ${m.taskId ? `<div class="msg-task mono">${esc(m.taskId)}</div>` : ''}
     </div>
@@ -393,7 +428,7 @@ function renderModal() {
       <div>
         <section><h3>최근 이벤트</h3>${eventList(d.events.filter((e) => e.member === m.id), 15)}</section>
         <section><h3>담당 경로</h3>${pathList(m.owns)}</section>
-        <section><h3>사용 기술 ${techCount(m)}</h3>${techBlock(m)}</section>
+        <section><h3>켜진 기술 ${techCount(m)}</h3>${techBlock(m)}</section>
       </div>
     </div>
     <details class="doc"><summary>MEMBER.md 원문</summary><div class="md">${doc ? mdToHtml(doc.member) : '<p class="muted">불러오는 중</p>'}</div></details>
@@ -437,10 +472,10 @@ const net = (() => {
     const rx = Math.min(W * 0.38, 470), ry = Math.min(H * 0.36, 230);
     const small = W < 640;
     const order = ms.find((m) => m.id === 'order');
-    if (order) next.set('order', { x: cx, y: cy, r: small ? 26 : 34, m: order });
+    if (order) next.set('order', { x: cx, y: cy, r: small ? 26 : 36, m: order });
     ring.forEach((m, i) => {
       const a = -Math.PI / 2 + (i + 0.5) * ((Math.PI * 2) / ring.length);
-      next.set(m.id, { x: cx + Math.cos(a) * rx, y: cy + Math.sin(a) * ry, r: small ? 19 : 25, m });
+      next.set(m.id, { x: cx + Math.cos(a) * rx, y: cy + Math.sin(a) * ry, r: small ? 20 : 28, m });
     });
     next.set('human', { x: small ? 34 : 64, y: small ? 34 : 52, r: small ? 15 : 18, m: { id: 'human', name: '사람', status: 'idle' } });
     nodes = next;
@@ -509,16 +544,24 @@ const net = (() => {
     l.kind = m.kind;
     links.set(k, l);
   }
+  // 빛 알갱이는 동시에 MAX_PARTICLES 개까지(넘치면 오래된 것부터 버린다). 가벼운 효과면 메시지마다 1개.
   function message(m) {
     touch(m);
     if (reduceMotion.matches || !nodes.has(m.from) || !nodes.has(m.to)) return kick();
     const now = performance.now();
-    for (let i = 0; i < 6; i++) particles.push({ from: m.from, to: m.to, t0: now + i * 110, dur: 1500, kind: m.kind, lead: i === 0 });
+    const n = lite() ? 1 : 4;
+    for (let i = 0; i < n; i++) particles.push({ from: m.from, to: m.to, t0: now + i * 90, dur: 900, kind: m.kind, lead: i === 0 });
+    if (particles.length > MAX_PARTICLES) particles.splice(0, particles.length - MAX_PARTICLES);
     kick();
+  }
+  function ripple(r) {
+    if (lite()) return;
+    ripples.push(r);
+    if (ripples.length > MAX_RIPPLES) ripples.splice(0, ripples.length - MAX_RIPPLES);
   }
   function event(e) {
     if (reduceMotion.matches || !nodes.has(e.member)) return;
-    if (e.type === 'tool' || e.type === 'start' || e.type === 'log') ripples.push({ id: e.member, t0: performance.now(), dur: 1000, color: e.type === 'tool' ? '#ffffff' : SC.working });
+    if (e.type === 'tool' || e.type === 'start' || e.type === 'log') ripple({ id: e.member, t0: performance.now(), dur: 600, color: e.type === 'tool' ? '#ffffff' : SC.working });
     kick();
   }
 
@@ -528,6 +571,7 @@ const net = (() => {
     ctx.drawImage(bg, 0, 0, W, H);
     const wall = Date.now();
     const still = reduceMotion.matches;
+    const light = lite();
 
     // 기본 바큇살
     const order = nodes.get('order');
@@ -562,7 +606,7 @@ const net = (() => {
       ctx.save();
       ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
       ctx.lineWidth = width;
-      if (!still) {
+      if (!still && !light) {
         ctx.shadowColor = 'rgba(200,215,255,0.9)';
         ctx.shadowBlur = 10 * alpha;
       }
@@ -580,15 +624,15 @@ const net = (() => {
       if (t < 0 || t > 1) {
         if (t > 1 && p.lead && !p.done) {
           p.done = true;
-          ripples.push({ id: p.to, t0: now, dur: 900, color: KC[p.kind] || '#fff' });
+          ripple({ id: p.to, t0: now, dur: 600, color: KC[p.kind] || '#fff' });
         }
         continue;
       }
       const q = curve(p.from, p.to);
       if (!q) continue;
       const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-      for (let j = 6; j >= 0; j--) {
-        const tt = Math.max(0, e - j * 0.018);
+      for (let j = light ? 0 : 4; j >= 0; j--) {
+        const tt = Math.max(0, e - j * 0.022);
         const pt = at(q, tt);
         const a = (1 - j / 7) * (p.lead ? 1 : 0.6);
         ctx.beginPath();
@@ -623,7 +667,7 @@ const net = (() => {
     for (const [id, n] of nodes) {
       const m = n.m;
       const st = m.status || 'idle';
-      if (st === 'working' && !still) {
+      if (st === 'working' && !still && !light) {
         const s = (Math.sin(now / 420) + 1) / 2;
         const g = ctx.createRadialGradient(n.x, n.y, n.r, n.x, n.y, n.r + 14 + s * 8);
         g.addColorStop(0, hexA(SC.working, 0.35 + s * 0.2));
@@ -639,14 +683,15 @@ const net = (() => {
       ctx.fill();
       if (id !== 'human') {
         // 픽셀 캐릭터: 원 안에 정수 배율로 (흐릿해지지 않게)
-        const px = Math.max(1, Math.floor((n.r * 1.7) / SIZE));
+        // 정수 배율만 쓴다(선명하게): 노드 56px 에 캐릭터 48px(3배), 오더 72px 에 64px(4배)
+        const px = Math.max(1, Math.floor((n.r * 2 - 8) / SIZE));
         const size = px * SIZE;
         ctx.imageSmoothingEnabled = false;
         ctx.save();
         ctx.beginPath();
         ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
         ctx.clip();
-        drawCharacter(ctx, character(id, { status: st, frame: still ? 0 : ui.frame }), n.x - size / 2, n.y - size / 2 + px, px);
+        drawCharacter(ctx, character(id, { status: st, frame: still || light ? 0 : ui.frame }), Math.round(n.x - size / 2), Math.round(n.y - size / 2 + px), px);
         ctx.restore();
       }
       ctx.lineWidth = id === hover ? 3.5 : 2.5;
@@ -679,10 +724,13 @@ const net = (() => {
   }
 
   // 움직일 것이 있을 때만 프레임을 돈다
+  // 움직일 것이 없으면 프레임을 멈춘다. 가벼운 효과면 빛 알갱이가 날 때만 돈다.
   function busy() {
     if (reduceMotion.matches) return false;
+    if (particles.length || ripples.length) return true;
+    if (lite()) return false;
     const wall = Date.now();
-    return particles.length || ripples.length || [...nodes.values()].some((n) => n.m.status === 'working') || [...links.values()].some((l) => wall - l.at < 60000);
+    return [...nodes.values()].some((n) => n.m.status === 'working') || [...links.values()].some((l) => wall - l.at < 20000);
   }
   function loop(now) {
     raf = 0;
@@ -733,6 +781,300 @@ const net = (() => {
   return { sync, message, event, kick, resize };
 })();
 
+// ── 효과 줄이기 ──
+const fx = { pref: store('squad.lite') === '1' };
+/** 가벼운 효과: 사용자가 켰거나, 멤버가 많거나, 움직임 줄이기 설정. */
+const lite = () => fx.pref || (ui.data?.members.length || 0) >= LITE_MEMBERS || reduceMotion.matches;
+function applyFx() {
+  document.documentElement.classList.toggle('fx-lite', lite());
+  const b = $('#fx-toggle');
+  b.setAttribute('aria-pressed', String(lite()));
+  b.title = fx.pref ? '효과를 줄였습니다 (누르면 되돌림)' : lite() ? `멤버가 ${LITE_MEMBERS}명 이상이거나 움직임 줄이기 설정이라 저절로 줄였습니다` : '빛 알갱이·파동·캐릭터 움직임을 줄입니다';
+}
+$('#fx-toggle').addEventListener('click', () => {
+  fx.pref = !fx.pref;
+  store('squad.lite', fx.pref ? '1' : '0');
+  applyFx();
+  paintSprites();
+  net.kick();
+});
+
+// ── 사용 기술 팝오버: 카드 밖에 떠서 카드 높이를 바꾸지 않는다 ──
+const pop = $('#tech-pop');
+function placeTech(btn) {
+  const r = btn.getBoundingClientRect();
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  let x = r.left, y = r.bottom + 6;
+  if (x + w > innerWidth - 8) x = innerWidth - 8 - w;
+  if (y + h > innerHeight - 8) y = r.top - 6 - h; // 아래가 모자라면 위로
+  pop.style.left = `${Math.max(8, x)}px`;
+  pop.style.top = `${Math.max(8, y)}px`;
+}
+function fillTech() {
+  const m = member(ui.techOpen);
+  if (!m) return closeTech(false);
+  const focused = document.activeElement?.closest?.('#tech-pop') ? document.activeElement.dataset.name + '|' + document.activeElement.dataset.toggle : null;
+  pop.innerHTML = `<div class="pop-head"><b>${esc(m.name)}</b><span class="muted">켜진 기술 ${techCount(m)}</span></div>${techBlock(m)}`;
+  if (focused) [...pop.querySelectorAll('input[data-toggle]')].find((x) => `${x.dataset.name}|${x.dataset.toggle}` === focused)?.focus();
+}
+function openTech(id) {
+  const btn = document.querySelector(`[data-tech="${CSS.escape(id)}"]`);
+  if (!btn) return;
+  if (ui.techOpen) closeTech(false);
+  ui.techOpen = id;
+  fillTech();
+  pop.hidden = false;
+  placeTech(btn);
+  btn.setAttribute('aria-expanded', 'true');
+  pop.querySelector('input')?.focus();
+}
+function closeTech(focus = true) {
+  if (!ui.techOpen) return;
+  const btn = document.querySelector(`[data-tech="${CSS.escape(ui.techOpen)}"]`);
+  ui.techOpen = null;
+  pop.hidden = true;
+  btn?.setAttribute('aria-expanded', 'false');
+  if (focus) btn?.focus();
+}
+/** 카드를 다시 그린 뒤 팝오버 내용과 위치를 맞춘다. */
+function refreshTech() {
+  if (!ui.techOpen) return;
+  const btn = document.querySelector(`[data-tech="${CSS.escape(ui.techOpen)}"]`);
+  if (!btn || !btn.offsetParent) return closeTech(false);
+  fillTech();
+  placeTech(btn);
+}
+document.addEventListener('pointerdown', (e) => {
+  if (ui.techOpen && !pop.contains(e.target) && !e.target.closest('[data-tech]')) closeTech(false);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && ui.techOpen) {
+    e.preventDefault();
+    closeTech();
+  }
+});
+addEventListener('resize', () => closeTech(false));
+$('.cards-col').addEventListener('scroll', () => closeTech(false), { passive: true });
+
+// 켜기·끄기 스위치(팝오버·상세 모달·모니터 공용) → MEMBER.md frontmatter 의 그 값만 바뀐다
+document.addEventListener('change', async (e) => {
+  const sw = e.target.closest?.('input[data-toggle]');
+  if (!sw) return;
+  sw.disabled = true;
+  try {
+    await api('/api/member/toggle', { project: ui.project, id: sw.dataset.member, kind: sw.dataset.toggle, name: sw.dataset.name || undefined, on: sw.checked });
+    toast(`${sw.dataset.name || 'headroom'} ${sw.checked ? '켬' : '끔'}`);
+  } catch (x) {
+    sw.checked = !sw.checked;
+    toast(x.message);
+  } finally {
+    sw.disabled = false;
+    load();
+  }
+});
+
+// ── 실행기(runner) 연결 상태 ──
+function renderRunners() {
+  $('#runners').innerHTML = ui.runners
+    .map((r) => `<span class="runner st-${esc(r.state)}" title="${esc([r.label, r.main ? '메인 AI' : '', r.secretSet !== undefined ? `키 ${r.secretSet ? '설정됨' : '없음'}` : '', r.detail].filter(Boolean).join(' · '))}"><i aria-hidden="true"></i>${esc(r.name)} <b>${esc(r.stateLabel)}</b>${r.secretSet !== undefined ? `<small>키 ${r.secretSet ? '설정됨' : '없음'}</small>` : ''}${r.canLogin ? `<button type="button" class="btn btn-sm" data-login="${esc(r.name)}">로그인 창 열기</button>` : ''}</span>`)
+    .join('');
+}
+async function loadRunners(refresh = false) {
+  try {
+    ui.runners = (await api(`/api/runners${refresh ? '?refresh=1' : ''}`)).runners;
+    renderRunners();
+    syncConfirm();
+  } catch {
+    // 상태를 못 읽어도 보드는 돈다
+  }
+}
+let loginPoll = null;
+async function openLogin(name) {
+  try {
+    await api('/api/runners/login', { runner: name });
+    toast('새 콘솔 창과 브라우저에서 직접 로그인하세요. 이 화면은 비밀번호를 받지 않습니다');
+    clearInterval(loginPoll);
+    let n = 0;
+    loginPoll = setInterval(async () => {
+      await loadRunners(true);
+      if (++n > 24 || !ui.runners.some((r) => r.canLogin)) clearInterval(loginPoll);
+    }, 5000);
+  } catch (x) {
+    toast(x.message);
+  }
+}
+$('#runners').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-login]');
+  if (b) openLogin(b.dataset.login);
+});
+
+// ── 승인 대기 칸 ──
+const pendingApprovals = () => (ui.data?.approvals || []).filter((a) => a.status === 'pending');
+function renderApprovals() {
+  const list = pendingApprovals();
+  $('#approvals').hidden = !list.length;
+  $('#approvals-count').textContent = list.length ? `${list.length}건` : '';
+  $('#approval-list').innerHTML = list
+    .map((a) => `<li class="approval">${avatar(a.from, 'sm')}<b>${esc(nameOf(a.from))}</b><span class="kind" style="--kc:var(--warn)">${esc(ACTION[a.action] || a.action)}</span>
+      <span class="grow" title="${esc(a.text)}">${esc(a.text)}</span><time title="${esc(fullTime(a.at))}">${rel(a.at)}</time>
+      <button type="button" class="btn btn-sm btn-primary" data-approve="${esc(a.id)}">승인</button>
+      <button type="button" class="btn btn-sm" data-reject="${esc(a.id)}">거절</button></li>`)
+    .join('');
+}
+async function decide(id, decision, note = '') {
+  try {
+    await api('/api/approvals/decide', { project: ui.project, id, decision, note });
+    toast(decision === 'approved' ? '승인했습니다' : '거절했습니다');
+  } catch (x) {
+    toast(x.message);
+  }
+  load();
+}
+$('#approval-list').addEventListener('click', (e) => {
+  const ok = e.target.closest('[data-approve]');
+  if (ok) return decide(ok.dataset.approve, 'approved');
+  const no = e.target.closest('[data-reject]');
+  if (no) {
+    ui.later.delete(`ap:${no.dataset.reject}`);
+    openConfirm(`ap:${no.dataset.reject}`, true);
+  }
+});
+
+// ── 확인 모달: 승인 요청 · 배정 기다리는 계획 · 로그인 필요를 줄 세워 하나씩 ──
+const confirmDlg = $('#confirm');
+const cf = { key: null, rejecting: false };
+const BASE_TITLE = document.title;
+function confirmItems() {
+  const items = pendingApprovals().map((a) => ({ key: `ap:${a.id}`, type: 'approval', a }));
+  if (order.plan) items.push({ key: `plan:${order.instruction}`, type: 'plan' });
+  for (const r of ui.runners) if (r.canLogin) items.push({ key: `login:${r.name}`, type: 'login', r });
+  return items;
+}
+function updateTitle(n) {
+  document.title = document.hidden && n ? `(확인 ${n}) ${BASE_TITLE}` : BASE_TITLE;
+}
+document.addEventListener('visibilitychange', () => updateTitle(confirmItems().length));
+
+/** 상태가 바뀔 때마다: 배지·제목을 맞추고, 새로 들어온 확인이 있으면 모달을 연다. 다른 곳에서 처리된 것은 지운다. */
+function syncConfirm() {
+  const items = confirmItems();
+  const keys = new Set(items.map((i) => i.key));
+  for (const k of [...ui.later]) if (!keys.has(k)) ui.later.delete(k);
+  const fresh = items.filter((i) => !ui.seenConfirm.has(i.key));
+  for (const i of items) ui.seenConfirm.add(i.key);
+  $('#confirm-badge').hidden = !items.length;
+  $('#confirm-count').textContent = items.length;
+  updateTitle(items.length);
+  if (confirmDlg.open) {
+    if (keys.has(cf.key)) {
+      // 보고 있는 것은 다시 그리지 않는다(쓰던 거절 사유·포커스 유지). 남은 건수만 고친다.
+      $('#confirm-left').textContent = items.length > 1 ? `남은 확인 ${items.length - 1}건` : '';
+      return;
+    }
+    cf.rejecting = false;
+    const next = items.find((i) => !ui.later.has(i.key));
+    if (next) {
+      cf.key = next.key;
+      renderConfirm(items);
+    } else confirmDlg.close();
+  } else if (fresh.length) {
+    openConfirm(fresh[0].key);
+  }
+}
+function openConfirm(key, rejecting = false) {
+  const items = confirmItems();
+  const it = items.find((i) => i.key === key) || items.find((i) => !ui.later.has(i.key));
+  if (!it) return;
+  cf.key = it.key;
+  cf.rejecting = rejecting;
+  renderConfirm(items);
+  if (!confirmDlg.open) confirmDlg.showModal();
+  (confirmDlg.querySelector('#reject-note') || confirmDlg.querySelector('[data-act]'))?.focus();
+}
+/** 영향 범위: 요청에 적힌 scope, 없으면 그 멤버의 담당 경로 */
+const scopeOf = (from, scope) => scope || (member(from)?.owns || []).join(', ') || '적지 않음';
+function renderConfirm(items) {
+  const it = items.find((i) => i.key === cf.key);
+  if (!it) return;
+  const left = items.length - 1;
+  $('#confirm-left').textContent = left > 0 ? `남은 확인 ${left}건` : '';
+  const btn = (act, label, cls = '') => `<button type="button" class="btn ${cls}" data-act="${act}">${label}</button>`;
+  let av = '', title = '', sub = '', body = '', acts = '';
+  if (it.type === 'approval') {
+    const a = it.a;
+    av = avatar(a.from, 'lg');
+    title = `${nameOf(a.from)} — ${ACTION[a.action] || a.action} 승인 요청`;
+    sub = `${esc(rel(a.at))}${a.taskId ? ` · <span class="mono">${esc(a.taskId)}</span>` : ''}`;
+    body = `<dl class="kv confirm-kv"><dt>하려는 일</dt><dd>${esc(a.text)}</dd><dt>이유</dt><dd>${esc(a.reason || '적지 않음')}</dd><dt>영향 범위</dt><dd class="mono">${esc(scopeOf(a.from, a.scope))}</dd></dl>
+      ${cf.rejecting ? `<label class="reject-box"><span>거절 사유 (요청한 멤버에게 갑니다)</span><textarea id="reject-note" class="input" rows="2" maxlength="300" placeholder="예: 테스트 통과를 먼저 확인해 주세요"></textarea></label>` : ''}`;
+    acts = cf.rejecting ? btn('back', '돌아가기', 'btn-ghost') + btn('reject-send', '거절 보내기', 'btn-danger') : btn('later', '나중에', 'btn-ghost') + btn('reject', '거절') + btn('approve', '승인', 'btn-primary');
+  } else if (it.type === 'plan') {
+    const owners = [...new Set(order.plan.map((p) => p.member))];
+    av = avatar('order', 'lg');
+    title = '메인 오더 계획 — 배정 확인';
+    sub = `작업 ${order.plan.length}개 · 아직 저장하지 않았습니다`;
+    body = `<dl class="kv confirm-kv"><dt>지시</dt><dd>${esc(order.instruction)}</dd><dt>영향 범위</dt><dd class="mono">${esc(owners.map((id) => `${id}: ${scopeOf(id)}`).join(' / '))}</dd></dl>${planGroups()}`;
+    acts = btn('later', '나중에', 'btn-ghost') + btn('plan-cancel', '취소') + btn('plan-confirm', '이대로 배정', 'btn-primary');
+  } else {
+    const r = it.r;
+    av = '<span class="avatar lg is-human" aria-hidden="true">로그인</span>';
+    title = `${r.label || r.name} 로그인 필요`;
+    sub = `${esc(r.name)} 실행기`;
+    body = `<p>[로그인 창 열기]를 누르면 이 컴퓨터에 새 콘솔 창이 뜨고 <code>claude auth login</code> 이 실행됩니다. 그 창과 브라우저에서 직접 로그인하세요.</p><p class="muted">이 화면은 비밀번호나 키를 받지 않습니다. 로그인이 끝나면 상태가 저절로 바뀝니다.</p>`;
+    acts = btn('later', '나중에', 'btn-ghost') + btn('login', '로그인 창 열기', 'btn-primary');
+  }
+  $('#confirm-avatar').innerHTML = av;
+  $('#confirm-title').textContent = title;
+  $('#confirm-sub').innerHTML = sub;
+  const note = $('#reject-note')?.value;
+  $('#confirm-body').innerHTML = body;
+  if (note && $('#reject-note')) $('#reject-note').value = note;
+  $('#confirm-actions').innerHTML = acts;
+  paintSprites();
+}
+function laterCurrent() {
+  ui.later.add(cf.key);
+  cf.rejecting = false;
+  const next = confirmItems().find((i) => !ui.later.has(i.key));
+  if (next) openConfirm(next.key);
+  else confirmDlg.close();
+}
+$('#confirm-actions').addEventListener('click', async (e) => {
+  const act = e.target.closest('[data-act]')?.dataset.act;
+  if (!act) return;
+  const it = confirmItems().find((i) => i.key === cf.key);
+  if (!it) return syncConfirm();
+  if (act === 'later') return laterCurrent();
+  if (act === 'reject' || act === 'back') {
+    cf.rejecting = act === 'reject';
+    renderConfirm(confirmItems());
+    return (confirmDlg.querySelector('#reject-note') || confirmDlg.querySelector('[data-act]'))?.focus();
+  }
+  e.target.closest('[data-act]').disabled = true;
+  if (act === 'approve') await decide(it.a.id, 'approved');
+  else if (act === 'reject-send') await decide(it.a.id, 'rejected', $('#reject-note')?.value || '');
+  else if (act === 'plan-confirm') await confirmPlan();
+  else if (act === 'plan-cancel') cancelPlan();
+  else if (act === 'login') {
+    await openLogin(it.r.name);
+    return laterCurrent(); // 로그인은 창에서 하므로 모달은 다음으로 넘긴다
+  }
+  cf.rejecting = false;
+  syncConfirm();
+});
+// Esc·바깥 클릭 = 나중에 (배지는 남는다)
+confirmDlg.addEventListener('cancel', (e) => {
+  e.preventDefault();
+  laterCurrent();
+});
+confirmDlg.addEventListener('click', (e) => {
+  if (e.target === confirmDlg) laterCurrent();
+});
+$('#confirm-badge').addEventListener('click', () => {
+  ui.later.clear();
+  openConfirm(confirmItems()[0]?.key);
+});
+
 // ── 이벤트 연결 ──
 function setView(v) {
   ui.view = v;
@@ -765,23 +1107,28 @@ window.addEventListener('hashchange', setTab);
 
 // ── 메인 오더에게 지시: 계획 만들기 → 이대로 배정 (두 단계) ──
 const order = { plan: null, instruction: '', busy: false };
+function planGroups() {
+  const groups = new Map();
+  for (const p of order.plan) groups.set(p.member, [...(groups.get(p.member) || []), p]);
+  return `<div class="plan-groups scroll">${[...groups].map(([id, list]) => `<div class="plan-group">
+      <div class="plan-who">${avatar(id, 'sm')}<b>${esc(nameOf(id))}</b><span class="muted">${list.length}개</span></div>
+      <ul>${list.map((p) => `<li><div class="plan-title"><span class="step" title="실행 순서">${p.step || 1}</span>${esc(p.title)}</div>${p.detail ? `<div class="plan-detail">${esc(p.detail)}</div>` : ''}${p.why ? `<div class="plan-why">${esc(p.why)}</div>` : ''}</li>`).join('')}</ul>
+    </div>`).join('')}</div>`;
+}
 function renderPlan() {
   const box = $('#order-plan');
   if (!order.plan) {
     box.hidden = true;
     box.innerHTML = '';
+    syncConfirm();
     return;
   }
-  const groups = new Map();
-  for (const p of order.plan) groups.set(p.member, [...(groups.get(p.member) || []), p]);
   box.hidden = false;
-  box.innerHTML = `<div class="plan-head"><b>계획</b><span class="muted">작업 ${order.plan.length}개 · 아직 저장하지 않았습니다</span>
+  box.innerHTML = `<div class="plan-head"><b>계획</b><span class="muted">작업 ${order.plan.length}개 · 아직 저장하지 않았습니다 · 숫자는 실행 순서</span>
       <div class="plan-actions"><button type="button" class="btn btn-ghost" id="plan-cancel">취소</button><button type="button" class="btn btn-primary" id="plan-confirm">이대로 배정</button></div></div>
-    <div class="plan-groups scroll">${[...groups].map(([id, list]) => `<div class="plan-group">
-      <div class="plan-who">${avatar(id, 'sm')}<b>${esc(nameOf(id))}</b><span class="muted">${list.length}개</span></div>
-      <ul>${list.map((p) => `<li><div class="plan-title">${esc(p.title)}</div>${p.detail ? `<div class="plan-detail">${esc(p.detail)}</div>` : ''}${p.why ? `<div class="plan-why">${esc(p.why)}</div>` : ''}</li>`).join('')}</ul>
-    </div>`).join('')}</div>`;
+    ${planGroups()}`;
   paintSprites();
+  syncConfirm();
 }
 function setOrderBusy(busy, label) {
   order.busy = busy;
@@ -794,7 +1141,7 @@ $('#order-form').addEventListener('submit', async (e) => {
   const text = $('#order-text').value.trim();
   const err = $('#order-error');
   err.textContent = '';
-  if (!text) return (err.textContent = '지시를 입력해 주세요');
+  if (!text) return (err.textContent = '지시를 입력하세요');
   if (order.busy) return;
   setOrderBusy(true, '계획 만드는 중');
   order.plan = null;
@@ -804,20 +1151,18 @@ $('#order-form').addEventListener('submit', async (e) => {
     order.plan = r.plan;
     order.instruction = r.instruction;
     renderPlan();
-    $('#plan-confirm')?.focus();
   } catch (x) {
     err.textContent = x.message;
   } finally {
     setOrderBusy(false);
   }
 });
-$('#order-plan').addEventListener('click', async (e) => {
-  if (e.target.closest('#plan-cancel')) {
-    order.plan = null;
-    renderPlan();
-    return $('#order-text').focus();
-  }
-  if (!e.target.closest('#plan-confirm') || order.busy) return;
+function cancelPlan() {
+  order.plan = null;
+  renderPlan();
+}
+async function confirmPlan() {
+  if (!order.plan || order.busy) return;
   const err = $('#order-error');
   err.textContent = '';
   setOrderBusy(true, '배정하는 중');
@@ -830,9 +1175,17 @@ $('#order-plan').addEventListener('click', async (e) => {
     load();
   } catch (x) {
     err.textContent = x.message;
+    toast(x.message);
   } finally {
     setOrderBusy(false);
   }
+}
+$('#order-plan').addEventListener('click', (e) => {
+  if (e.target.closest('#plan-cancel')) {
+    cancelPlan();
+    return $('#order-text').focus();
+  }
+  if (e.target.closest('#plan-confirm')) confirmPlan();
 });
 for (const b of document.querySelectorAll('.seg-btn')) b.addEventListener('click', () => setView(b.dataset.view));
 
@@ -854,12 +1207,8 @@ $('#project-select').addEventListener('change', (e) => {
 $('#cards').addEventListener('click', (e) => {
   const t = e.target.closest('[data-tech]');
   if (t) {
-    const id = t.dataset.tech;
-    if (ui.openTech.has(id)) ui.openTech.delete(id);
-    else ui.openTech.add(id);
-    renderCards();
-    paintSprites();
-    document.querySelector(`[data-tech="${CSS.escape(id)}"]`)?.focus();
+    if (ui.techOpen === t.dataset.tech) closeTech();
+    else openTech(t.dataset.tech);
     return;
   }
   const o = e.target.closest('[data-open]');
@@ -935,9 +1284,9 @@ setInterval(() => {
   }
 }, 10000);
 
-// 캐릭터 움직임: 0.5초마다 프레임을 바꾼다. 움직임 줄이기면 멈춘다.
+// 캐릭터 움직임: 0.5초마다 프레임을 바꾼다. 움직임 줄이기·가벼운 효과·안 보이는 탭이면 멈춘다.
 setInterval(() => {
-  if (reduceMotion.matches || document.hidden) return;
+  if (lite() || document.hidden) return;
   ui.frame ^= 1;
   paintSprites();
   if (netVisible()) net.kick();
@@ -956,7 +1305,10 @@ setInterval(() => {
     if (!ui.project) return toast('등록된 프로젝트가 없습니다');
     connect();
     await load();
+    loadRunners();
   } catch (e) {
     toast(e.message);
   }
 })();
+// 연결 상태는 1분마다 (서버가 5분 동안 결과를 기억하므로 claude 를 자주 부르지 않는다)
+setInterval(() => !document.hidden && loadRunners(), 60000);

@@ -1,4 +1,4 @@
-# AI Squad — 설계 (v0.1, 2026-10-19)
+# AI Squad — 설계 (v0.3, 2026-10-19)
 
 AI 에이전트를 "직원"처럼 파트별로 나눠 일을 맡기고, 누가 무엇을 하는지·서로 무슨 말을 주고받는지를 한 화면에서 보는 코워커 관리 시스템. 첫 적용 프로젝트는 QUGO(`C:\Users\weaal\qugo`).
 
@@ -7,7 +7,8 @@ AI 에이전트를 "직원"처럼 파트별로 나눠 일을 맡기고, 누가 �
 1. **메인 오더(Main Order)** 가 지시를 받아 파트(스쿼드 멤버)에게 나눠 준다. 파트가 잘 나뉘면 멤버마다 맥락이 좁게 유지돼 전문성이 높아지고 토큰이 준다. 그래서 메인 오더의 문서(`ORDER.md`)와 각 멤버 문서(`MEMBER.md`) 관리가 핵심이다.
 2. 스쿼드는 화면 단위(메인 페이지·대시보드·문진)만이 아니라 IR·PoC 같은 사업 문서 파트도 포함하는, 프로젝트마다 전형적이지만 전문적인 구성이다.
 3. **커뮤니케이션이 가장 중요하다.** 지시·인계·질문·완료 보고가 모두 메시지로 남고 보드에 보인다.
-4. 멤버마다 쓰는 AI(모델)·플러그인·스킬·MCP·도구가 문서에 적혀 있어야 하고, 메인 오더는 그것을 보고 일을 배정한다. 지금은 Claude(Claude Code CLI)만 쓰고, 나중에 다른 AI 에이전트(예: 모두의창업 지원 솔루션)를 멤버로 붙인다 → 멤버의 `runner` 값으로 구분한다.
+4. 멤버마다 쓰는 AI(모델)·플러그인·스킬·MCP·도구가 문서에 적혀 있어야 하고, 메인 오더는 그것을 보고 일을 배정한다. Claude(Claude Code CLI)가 메인이고, 다른 AI(예: 모두의창업 지원 솔루션)는 `squad.config.json` 의 runner 로 붙인다 → 멤버의 `runner` 값으로 고른다(8절).
+7. **(v0.3) 어떤 파트도 뒤떨어지거나 동떨어지지 않는다.** 분업(owns 감시·승인 대기), 토큰 관리(사용량 누적·짧은 요약), 커뮤니케이션(답 없는 인계·멈춤 표시, 확인 모달)을 보드와 메인 오더 요약 양쪽에 보인다.
 5. 메인 오더 문서는 AI Squad 저장소에, **멤버 문서는 해당 프로젝트 안의 폴더**(`<프로젝트>/.squad/members/<id>/MEMBER.md`)에 둔다. 그래야 그 프로젝트에서 일하는 어떤 에이전트든 서로의 맥락과 작업을 읽을 수 있다.
 6. 토큰 절약: 멤버 실행은 기본으로 `claude -p ...` 를 바로 띄운다. Headroom(압축 프록시)은 필수가 아닌 선택 도구로, `--headroom` 플래그나 MEMBER.md frontmatter 의 `headroom: true` 가 있을 때만 `headroom wrap claude -- -p ...` 로 감싼다(2026-10-19 변경). 실행 로그는 파일에 쓰고 보드에는 요약 이벤트만 올린다.
 
@@ -39,7 +40,7 @@ C:\Users\weaal\ai-squad\                 # 이 저장소 (git)
 id: org-dashboard
 name: 기업 대시보드
 emoji: (쓰지 않음 — 이모지 금지. 화면은 이니셜 아바타)
-runner: claude            # claude | external (사람이 붙인 다른 AI — CLI 가 실행하지 않고 보드에만 표시)
+runner: claude            # squad.config.json 의 runners 이름(claude, startup-ai 등) | external (사람이 넘겨 주는 AI — CLI 가 실행하지 않음)
 model: claude-opus-5-5    # claude -p --model 값 (비우면 기본)
 owns:                     # 이 멤버가 고치는 경로 — 다른 멤버는 손대지 않는다
   - qugo_fe_web/app/organization/**
@@ -49,7 +50,9 @@ tools:                    # claude -p --allowedTools 로 넘길 도구 (없으�
   - Read
   - Edit
   - "Bash(npx tsc *)"
-plugins: [design:design-critique]   # 쓰는 플러그인·스킬·MCP 이름 (보드 표시 + 오더가 배정할 때 참고)
+plugins:                  # 플러그인·스킬·MCP 켜기·끄기 맵. 켜진 것만 실행 프롬프트·오더 요약에 들어간다
+  design:design-critique: true
+  dataviz: false          # 옛 배열 형식 `plugins: [a, b]` 도 읽는다(모두 켜짐)
 initials: OD              # 아바타 이니셜 (비우면 id 에서 만든다)
 headroom: false           # true 면 run 이 headroom wrap claude 로 감싼다 (선택)
 ---
@@ -66,9 +69,12 @@ headroom: false           # true 면 run 이 headroom wrap claude 로 감싼다 
 |---|---|
 | `init <project> <path>` | `.squad/` 뼈대와 `projects.json` 항목 만들기 (있으면 건드리지 않음) |
 | `status [project]` | 멤버별 상태·지금 작업·대기 작업 수를 표로 |
-| `order <project> "<지시>" [--dry] [--headroom]` | 메인 오더 실행: ORDER.md + SQUAD.md + 멤버 frontmatter 요약(본문 전체가 아님 — 토큰 절약)을 넣어 `claude -p --output-format json` 으로 계획(JSON: `[{member, title, detail, why}]`)을 받고, 작업을 tasks.jsonl 에, 지시 메시지를 messages.jsonl 에 남긴다. `--dry` 는 계획만 출력 |
+| `order <project> "<지시>" [--dry] [--auto] [--headroom]` | 메인 오더 실행: `squad.config.json` 의 `mainAi`(runner·모델)로 ORDER.md + SQUAD.md + 멤버 짧은 요약(8.4)을 넣어 계획(JSON: `[{member, title, detail, why, step}]`, step 은 실행 순서)을 받는다. **사람이 터미널에서 y 로 승인해야** 작업·지시 메시지로 저장한다(자동 배정 없음, 터미널이 아니면 저장하지 않음). `--dry` 는 계획만, `--auto` 는 배정 뒤 한 번 더 승인하면 step 순서대로 `run` 을 차례로 돌린다(막히면 멈춤). 계획 사용량은 `plan` 이벤트로 남긴다 |
 | `run <project> <member> [taskId] [--headroom]` | 그 멤버의 가장 오래된 todo(또는 지정 작업)를 실행: 프롬프트 = MEMBER.md + NOTES.md + 작업 + 실행 규칙. `claude -p <프롬프트> --output-format stream-json --verbose --permission-mode acceptEdits --allowedTools ...` 를 프로젝트 경로에서 띄우고(`--headroom` 이나 MEMBER.md `headroom: true` 면 `headroom wrap claude -- ...` 로 감싼다), stream-json 을 읽어 도구 사용(도구 이름·파일 경로만, 내용 없이)을 events.jsonl 에 올리고 원본은 logs/ 에. 끝나면 결과 요약을 작업 summary 와 `report` 메시지로, MEMBER.md "지금 작업"을 비운다. headroom 이 켜져 있는데 설치돼 있지 않으면 경고만 하고 `claude` 로 실행 |
 | `msg <project> <from> <to> "<내용>" [--kind handoff] [--task T]` | 메시지 남기기 (사람·다른 세션·멤버 공용) |
+| `approve request <project> <from> <push\|deploy\|migrate\|send\|delete> "<무엇을>" [--reason] [--scope] [--task]` | 위험 행위 승인 요청 → `<project>/.squad/approvals.jsonl` |
+| `approve list\|yes\|no <project> [id] [--reason 사유]` | 승인 대기 보기·결정 (요청한 멤버에게 answer 메시지). `--demo` 면 시연 파일에 |
+| `auth status\|set\|clear\|login [runner]` | runner 연결 상태 / 외부 runner 키 넣기(입력이 보이지 않음) / 지우기 / `claude auth login` |
 | `log <project> <member> "<내용>" [--status working|idle|blocked]` | 대화형 세션(이 Claude Code 창 등)이 지금 하는 일을 보드에 보고 |
 | `task <project> add|done|block <...>` | 작업 직접 다루기 |
 | `board [--port 4777]` | 보드 서버 실행 |
@@ -113,8 +119,65 @@ headroom: false           # true 면 run 이 headroom wrap claude 로 감싼다 
 
 각 MEMBER.md 의 "하지 말 것"에는 해당 저장소 CLAUDE.md 의 절대 규칙 중 그 파트에 걸리는 것만 짧게 옮긴다(전체 복사 금지 — 링크).
 
-## 7. 하지 않는 것 (v0.1)
+## 7. 하지 않는 것
 
 - Claude Code 설정(`~/.claude/settings.json`) 훅 자동 등록 — 사람이 결정. 대신 `run` 이 stream-json 으로 이벤트를 얻고, 대화형 세션은 `squad log` 로 보고한다. 훅 연결 방법은 README 에 "선택"으로 적는다.
-- 외부 배포, 인증, 여러 PC 동기화(나중에 드라이브·클라우드).
+- 외부 배포, 계정·사용자 인증, 여러 PC 동기화(나중에 드라이브·클라우드). 보드의 접속 토큰은 "이 컴퓨터의 이 실행"만 확인한다.
+- 웹 화면에서 비밀번호·API 키 받기. 로그인은 콘솔 창과 브라우저에서 사람이 직접, 키는 터미널 `auth set` 으로만.
+- owns 밖 수정을 되돌리기(감지·경고·막힘 표시만).
 - `--dangerously-skip-permissions` 사용.
+
+## 8. v0.3 — 분업·토큰·커뮤니케이션 (2026-10-19)
+
+### 8.1 메인 AI 와 실행기(runner)
+
+- `squad.config.json`(git 포함, 비밀값 없음): `mainAi: {runner, model}`, `runners: {이름: {type, label, ...}}`, `stale: {answerMinutes, idleMinutes}`.
+- 어댑터는 `lib/runners/` — `claude.mjs`(Claude Code CLI, 계획은 `--output-format json`, 멤버는 `stream-json`), `command.mjs`(범용 CLI 템플릿 `{"cmd": "some-ai", "args": ["--prompt", "{prompt}"]}`; `{prompt}`·`{model}`·`{cwd}` 를 채우고, `{prompt}` 가 없으면 stdin 으로 보낸다. 셸을 거치지 않는다. 출력은 텍스트 그대로, 사용량은 모름). 같은 모양 `exec({prompt, cwd, mode: plan|member, model, tools, onLine, onTool}) → {code, text, isError, usage}`, `status() → ok|login|unset`.
+- 오더(`order`·보드 지시)는 `mainAi`, 멤버(`run`)는 MEMBER.md 의 `runner`. `lib/runner.mjs` 의 `planOrder` · `saveOrder` · `runMember` 를 CLI 와 보드가 같이 쓴다.
+
+### 8.2 로그인·인증 (로컬에만)
+
+- 보드 상단에 runner 별 연결 상태: 연결됨 / 로그인 필요 / 미설정. claude 는 `claude auth status --json`(모델을 부르지 않는 가벼운 확인, 5분 기억)과 마지막 실행 결과로 정한다. 이메일 같은 값은 내보내지 않는다.
+- 로그인 필요면 [로그인 창 열기] → 서버가 `cmd /c start "" cmd /k claude auth login` 으로 보이는 콘솔 창을 띄운다. 사람은 그 창과 브라우저에서 직접 로그인한다. 웹 화면은 비밀번호·키를 받지 않는다. 그 뒤 5초마다 상태를 다시 본다(최대 2분).
+- 키가 필요한 외부 runner 는 `node bin/squad.mjs auth set <runner>` — 입력이 화면에 보이지 않고, `%APPDATA%\ai-squad\secrets.json`(다른 OS 는 `~/.config/ai-squad/`)에 저장한다. runner 실행 때 `secret` 에 적은 이름의 환경 변수로만 넘긴다. 보드는 "키 설정됨/없음" 만 본다.
+
+### 8.3 권한
+
+- **접속 토큰:** 보드를 띄울 때마다 무작위 토큰을 만들어 `http://localhost:<port>/?t=...` 로 터미널에 찍는다. 첫 방문에 `HttpOnly; SameSite=Strict` 쿠키(`squad_t_<port>` — 쿠키는 포트를 가리지 않아 이름에 포트를 넣음)로 바꾸고 302 로 주소창에서 지운다. `/api/*`(읽기·쓰기·SSE 모두)는 쿠키가 없으면 401. 화면 파일은 토큰 없이도 받아 "터미널의 주소로 다시 여세요" 안내를 띄운다. Host·Origin 검사는 그대로.
+- **승인 대기:** 위험 행위(push·배포·DB 마이그레이션·외부 발송·삭제)는 `squad approve request ...` 로 요청만 남긴다(멤버 실행 프롬프트 규칙에 들어 있다). `approvals.jsonl` 은 덧붙이기만(요청 줄 + 결정 줄, 첫 결정만 인정). 보드 "승인 대기" 칸과 확인 모달에서 승인·거절(사유) → 요청한 멤버에게 answer 메시지.
+- **맡은 경로 밖 수정 감지:** `run` 전후로 대상 저장소의 `git status --porcelain -z -uall` 을 (상태 + 수정 시각 + 크기) 지문으로 비교한다. 프로젝트 경로가 저장소가 아니면 바로 아래 저장소들(QUGO: `qugo_be_api/`, `qugo_fe_web/`)을 본다. owns + 자기 멤버 폴더 + `.squad/*.jsonl` 밖이 바뀌었으면 작업을 `blocked` 로, 메인 오더에게 경고 메시지. 되돌리지 않는다. ponytail: 같은 저장소를 사람이 동시에 고치면 그것도 잡힌다 — 그럴 때는 경고를 보고 사람이 상태를 바꾼다.
+
+### 8.4 토큰 관리
+
+- claude 의 마지막 result 에서 `usage`(입력·출력·캐시 읽기·캐시 쓰기)와 `total_cost_usd` 를 읽어 작업(`usage`)과 `end`/`plan` 이벤트에 남긴다. 상태 계산이 멤버별 이번 작업·오늘·누적과 프로젝트의 오늘 합계를 낸다.
+- 카드: "이번 작업 n토큰"(마우스를 올리면 오늘·누적), 상단: "오늘 토큰"(입력·출력·캐시 내역은 툴팁), 칸반 카드: 작업 토큰.
+- 메인 오더 프롬프트에는 멤버 문서 전체가 아니라 `memberDigest`(상태·지금 작업·대기 수·역할 1줄·owns·켜진 플러그인·최근 인계 1줄·주의) 만 넣는다. 줄마다 160자, 멤버마다 520자, 전체 4000자 상한(`squadDigest`, 넘치면 "n명 더"). 시험이 상한을 지킨다.
+- 멤버 실행 프롬프트도 MEMBER.md 의 frontmatter 를 빼고 본문만 넣고, 경계(owns·reads)와 "사용할 수 있는 도구"(도구 + 켜진 플러그인만)를 짧게 따로 적는다.
+
+### 8.5 뒤처지거나 동떨어진 파트
+
+- **답 없는 인계:** handoff·question 을 받은 지 `answerMinutes`(기본 30분)가 지났는데 받은 쪽이 그 뒤로 보낸 쪽에게(또는 같은 작업으로) 아무 말도 하지 않았다 → 받은 멤버 카드·모니터 줄·대화 탭에 표시.
+- **멈춤:** 할 일(todo)이 있는데 일하는 중이 아니고, 마지막 이벤트와 가장 오래된 할 일 중 늦은 쪽에서 `idleMinutes`(기본 30분)가 지났다 → 카드(점선 테두리)·모니터 줄에 표시.
+- 두 가지 모두 메인 오더 요약의 "주의" 줄에 들어가, 오더가 그것부터 푸는 작업을 앞 순서에 둔다. `status` 명령에도 보인다.
+
+### 8.6 확인 모달
+
+- 사람이 확인해야 하는 것 — 새 승인 요청, "이대로 배정"을 기다리는 계획, 로그인 필요 — 이 SSE 로 들어오면 어느 탭에 있든 모달이 뜬다.
+- 요청한 멤버의 캐릭터, 하려는 일, 이유, 영향 범위(요청의 scope, 없으면 그 멤버의 owns)와 [승인] [거절(사유)] [나중에]. 여러 건이면 줄을 세워 하나씩, "남은 확인 n건".
+- [나중에]·Esc·바깥 클릭으로 닫아도 상단에 "확인 대기 n" 배지가 남고, 누르면 다시 연다. 다른 탭·브라우저·CLI 에서 처리된 요청은 저절로 사라진다. 탭이 백그라운드면 제목에 "(확인 n)". 소리·알림 권한 팝업 없음.
+
+### 8.7 플러그인·headroom 켜기·끄기
+
+- MEMBER.md `plugins` 는 `이름: true|false` 맵(옛 배열은 모두 켜짐), `headroom: true|false`. 켜진 것만 실행·오더 프롬프트에 들어가고 headroom 은 켜졌을 때만 감싼다.
+- 보드의 사용 기술 팝오버·상세 모달·모니터 줄에 스위치. 바꾸면 `POST /api/member/toggle` 이 frontmatter 의 그 값만 고친다(`setFrontmatterValue`·`setFrontmatterFlag`: 다른 줄·주석·본문·줄바꿈 보존, 배열 형식이면 그 키 줄만 맵으로 바꿈). 카드에는 "켜진 기술 n / 전체 m". 시연(`--demo`)에서는 실제 MEMBER.md 대신 `data/demo/<project>/toggles.json` 에 쓴다.
+
+### 8.8 화면 수정
+
+- 사용 기술은 카드 밖에 뜨는 팝오버(고정 위치, 바깥 클릭·Esc 로 닫힘, 화면 밖으로 나가지 않게 보정, 아래가 모자라면 위로). 카드 높이가 바뀌지 않는다.
+- 픽셀 캐릭터는 정수 배율만: 카드 48px(3배), 작은 아바타 32px, 모달 64px, 노드 지름 56px 에 캐릭터 48px(오더 72px 에 64px), `image-rendering: pixelated`.
+- 동작: 전환 150ms 안팎, 빛 알갱이 동시 30개·파동 12개 상한, 탭이 안 보이면 그리지 않음, 캔버스는 requestAnimationFrame 하나로 움직일 것이 없으면 멈춤. 멤버 12명 이상이거나 "효과 줄이기"(localStorage `squad.lite`)·움직임 줄이기면 가벼운 효과(알갱이 1개, 파동·빛 번짐·맥박·캐릭터 움직임 없음).
+- 빈 지시 오류는 "지시를 입력하세요". 검증 문구는 조사 자동 처리 없이 필드마다 완성 문장으로 쓴다.
+
+### 8.9 시연
+
+`scripts/demo-events.mjs` 가 연결 상태(실제 상태), 승인 요청 1건(백엔드의 로컬 DB 마이그레이션 → 확인 모달), 토큰 사용량, 답 없는 인계(사이트 → 사업 문서), 멈춘 멤버(배포·보안)를 만든다. 모두 `data/demo/` 에만 쓴다.

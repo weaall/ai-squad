@@ -1,0 +1,14 @@
+{
+  "mainAi": { "runner": "claude", "model": "" },
+  "runners": {
+    "claude": { "type": "claude", "label": "Claude Code" },
+    "startup-ai": {
+      "type": "command",
+      "label": "모두의창업 지원 솔루션(예시)",
+      "cmd": "startup-ai",
+      "args": ["--prompt", "{prompt}"],
+      "secret": "STARTUP_AI_KEY"
+    }
+  },
+  "stale": { "answerMinutes": 30, "idleMinutes": 30 }
+}
