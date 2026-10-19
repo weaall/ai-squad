@@ -128,6 +128,10 @@ test('보드 서버: 토큰·상태·POST·승인·켜기끄기·SSE·보안', a
     assert.equal((await post('/api/runners/login', { runner: 'nope' })).status, 404);
     assert.equal((await post('/api/runners/login', { runner: 'claude' }, { Cookie: '' })).status, 401);
 
+    // headroom 절약: 가짜 planner 면 수집하지 않아 404(화면은 '수집 전'), 토큰 없으면 401
+    assert.equal((await get('/api/usage/headroom')).status, 404);
+    assert.equal((await fetch(`${base}/api/usage/headroom`)).status, 401);
+
     // SSE: 이벤트 파일이 바뀌면 change 를 민다
     const got = await new Promise((resolve, reject) => {
       let appended = false;

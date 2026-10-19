@@ -1,4 +1,6 @@
 ## 인계 메모
+- GET /api/usage/headroom: lib/headroom.mjs savingsCache 가 5분마다 `headroom savings --json --days 7` → {at, data(날것 JSON)}, 없으면 404. startBoard savings 옵션(가짜 planner 면 null).
+- weekUsage days[] 에 total(날것 토큰)·costUsd·runners{r:{total,costUsd}} 추가 — 사용량 탭은 events 대신 이것을 쓰면 정확.
 - 토큰 아끼기 2단계: runMember 가 r.sessionId 를 task.sessionId·sessionKey('<멤버>:<runner>', 대체면 claude)로 저장, 다음 실행은 저장본을 다시 읽어 키가 같을 때만 exec({resume}) — reassign·runner 변경 땐 자동으로 새 세션.
 - state members[].runStats {runs, avgBase, perTask}(end 이벤트 usage.base·작업별 합 평균). 프롬프트에 data/<project>/map.md 의 mapFor 를 '## 파일 지도' 로. 큐 시작 때 refreshMap 자동 호출은 안 함(커밋마다 LLM 호출) — squad map 수동.
 - 오더 규칙에 '파일 5개·40턴, 작은 작업 묶기', 멤버 최종 보고 '요약 8줄 이내'. runStats 화면 표시는 ui 인계 필요.

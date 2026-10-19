@@ -16,6 +16,7 @@ import { planNeedsConfirm } from '../lib/confirm.mjs';
 import { addInbox, loadInbox } from '../lib/inbox.mjs';
 import { buildReport, dateKey, isDateKey } from '../lib/report.mjs';
 import { limitsView, loadLimits } from '../lib/limits.mjs';
+import { savingsCache } from '../lib/headroom.mjs';
 import { CAPTURE_RE } from '../lib/capture.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { LOGIN_COMMAND, runnerStatuses } from '../lib/runners/index.mjs';
@@ -112,6 +113,8 @@ export function startBoard({
   root, port = 4777, demo = false, host = '127.0.0.1', quiet = false, planner = planOrder,
   token = randomBytes(24).toString('base64url'), openLogin = openLoginWindow, statuses = runnerStatuses,
   queue = planner === planOrder ? runQueue : null,
+  // 사용량 탭 headroom 절약 수치(5분마다). 시험(가짜 planner)에서는 기본으로 실행하지 않는다.
+  savings = planner === planOrder ? savingsCache() : null,
 }) {
   const cookieName = `squad_t_${port}`; // 쿠키는 포트를 가리지 않아서 이름에 포트를 넣는다
   const authed = (req) => same(readCookie(req.headers.cookie, cookieName), token);
@@ -379,6 +382,10 @@ export function startBoard({
       const ps = loadProjects(root);
       return send(res, 200, { demo, projects: Object.entries(ps).map(([id, v]) => ({ id, name: v.name || id })) });
     }
+    if (url.pathname === '/api/usage/headroom') {
+      const s = savings?.get();
+      return s ? send(res, 200, s) : send(res, 404, { error: '아직 수집 전입니다' });
+    }
     if (url.pathname === '/api/capture') {
       // 캡처 PNG: data/captures 안의 정해진 이름 모양만
       const name = url.searchParams.get('name') || '';
@@ -450,6 +457,7 @@ export function startBoard({
         close() {
           clearInterval(poll);
           clearInterval(beat);
+          savings?.stop();
           for (const w of watchers) w.close();
           for (const c of clients) c.res.end();
           return new Promise((r) => server.close(r));
