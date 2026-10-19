@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
@@ -20,7 +20,7 @@ import { buildReport, dateKey, isDateKey, polishPrompt } from '../lib/report.mjs
 import { capture, captureName } from '../lib/capture.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { getRunner, runnerStatuses, LOGIN_COMMAND } from '../lib/runners/index.mjs';
-import { withTaskLock } from '../lib/runners/lock.mjs';
+import { QUEUE_LOCK, lockTask, wakeQueue, withTaskLock } from '../lib/runners/lock.mjs';
 import { outputStyleFile } from '../lib/runners/skills.mjs';
 import { retryOnce } from '../lib/runners/retry.mjs';
 import { setSecret, secretsFile } from '../lib/secrets.mjs';
@@ -85,6 +85,9 @@ const HELP = `AI Squad CLI
 
   run·order·run-queue·review·report --ai 는 실행 전에 오늘 토큰 예산(squad.config.json budget)을 본다.
   80% 를 넘으면 승인 대기(budget)를 남기고 결정을 기다리고, 100% 를 넘으면 실행하지 않는다.`;
+
+// 할 일이 생긴 뒤 그 프로젝트 대기열이 안 돌면 백그라운드로 띄운다. 띄웠으면 true
+const wake = (paths, args) => wakeQueue({ cli: fileURLToPath(import.meta.url), root: ROOT, paths, args });
 
 function fail(msg) {
   console.error(`오류: ${msg}`);
@@ -400,9 +403,8 @@ const commands = {
       } catch (e) {
         fail(e.message);
       }
-      const args = [fileURLToPath(import.meta.url), 'run-queue', paths.id, ...(o.headroom ? ['--headroom'] : [])];
-      spawn(process.execPath, args, { cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true }).unref();
-      return console.log(`작업 ${saved.length}개를 자동 배정했습니다. 대기열을 백그라운드로 시작했습니다 (진행은 status·보드에서)`);
+      const woke = wake(paths, o.headroom ? ['--headroom'] : []);
+      return console.log(`작업 ${saved.length}개를 자동 배정했습니다. ${woke ? '대기열을 백그라운드로 시작했습니다' : '돌고 있는 대기열이 이어서 합니다'} (진행은 status·보드에서)`);
     }
     console.log('확인이 필요합니다:');
     for (const why of c.reasons) console.log(`  - ${why}`);
@@ -472,12 +474,17 @@ const commands = {
     const { paths, members } = ctx(projectId);
     const max = Number(o.max || loadConfig(ROOT).queue?.max || 2);
     if (!Number.isInteger(max) || max < 1 || max > 8) fail('--max 는 1~8');
+    // 프로젝트마다 대기열 하나 — 이미 돌고 있으면 그쪽이 새 todo 도 집어 간다(매 바퀴 tasks 를 다시 읽는다)
+    const release = lockTask(path.join(paths.squad, 'locks'), QUEUE_LOCK);
+    if (!release) return console.log('대기열이 이미 돌고 있습니다');
     console.log(`대기열 실행 — 동시에 ${max}개까지`);
     const r = await runQueue({
       root: ROOT, paths, max, headroom: Boolean(o.headroom), retry: Boolean(o.retry),
       loadMembers: () => loadMembers(paths),
       gate: (subject, what, taskId) => gate(paths, members, subject, what, taskId),
     });
+    // ponytail: 마지막 바퀴와 잠금 해제 사이에 생긴 todo 는 놓친다 — 보드 서버의 30초 점검이 깨운다
+    release();
     console.log(`끝: 실행 ${r.ran}건 · 막힘 ${r.blocked}건${r.stoppedBy ? ` · ${r.stoppedBy}로 멈춤` : ''}`);
     if (r.blocked || r.stoppedBy) process.exitCode = 1;
   },
@@ -725,9 +732,9 @@ const commands = {
       const t = addTask(paths, members, next.task, from);
       console.log(`${to} 에게 답변 작업 ${t.id}`);
     }
-    // 새로 할 일이 생기면 run-queue 를 백그라운드로 (order 자동 배정과 같은 방식)
+    // 새로 할 일이 생기면 대기열을 깨운다 (order 자동 배정과 같은 방식)
     if (next.task || next.resume) {
-      spawn(process.execPath, [fileURLToPath(import.meta.url), 'run-queue', paths.id], { cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      wake(paths);
     }
   },
 
@@ -747,12 +754,15 @@ const commands = {
     const { paths, members } = ctx(projectId);
     if (sub === 'add') {
       const t = addTask(paths, members, { member: a, title: b, detail: o.detail, ...(o.after ? { dependsOn: o.after.split(',').map((x) => x.trim()).filter(Boolean) } : {}) });
+      wake(paths);
       return console.log(`작업 ${t.id}`);
     }
     if (sub === 'done' || sub === 'block') {
       const patch = sub === 'done' ? { status: 'done', summary: o.summary || '' } : { status: 'blocked', summary: o.reason || '' };
       const t = updateTask(paths.tasks, a, patch);
       if (!t) fail(`작업이 없습니다: ${a}`);
+      // done 이면 그 작업을 기다리던 todo 가 풀릴 수 있다
+      if (sub === 'done') wake(paths);
       return console.log(`${t.id} → ${patch.status}`);
     }
     fail('사용법: task add|done|block ...');
