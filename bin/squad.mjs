@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
@@ -14,6 +14,7 @@ import { STATUS_LABEL, buildState, describeEvent, tokenTotal } from '../lib/stat
 import { validateMessage, validateTask } from '../lib/validate.mjs';
 import { askMainAi, budgetGate, planOrder, runMember, runOrder, runQueue, runReview, saveOrder } from '../lib/runner.mjs';
 import { waitDecision } from '../lib/approvals.mjs';
+import { planNeedsConfirm } from '../lib/confirm.mjs';
 import { addInbox, doneInbox, INBOX_LABEL, loadInbox, takeInbox } from '../lib/inbox.mjs';
 import { buildReport, dateKey, isDateKey, polishPrompt } from '../lib/report.mjs';
 import { capture, captureName } from '../lib/capture.mjs';
@@ -376,7 +377,21 @@ const commands = {
     for (const p of ordered) console.log(`- [${p.step}] ${p.member}: ${p.title}${p.why ? `  (${p.why})` : ''}`);
     if (usage) console.log(`(계획 ${tokenTotal(usage).toLocaleString('ko-KR')}토큰)`);
     if (o.dry) return console.log('(--dry: 저장하지 않음)');
-    // 자동 배정은 하지 않는다: 늘 사람이 이 터미널에서 승인해야 저장한다
+    // 보드 /api/order 와 같은 규칙: 확인이 필요 없으면 바로 배정하고 run-queue 를 백그라운드로 띄운다
+    const c = planNeedsConfirm({ plan, members, config: loadConfig(ROOT) });
+    if (!c.needsConfirm) {
+      let saved;
+      try {
+        saved = saveOrder({ paths, members, instruction, plan: ordered });
+      } catch (e) {
+        fail(e.message);
+      }
+      const args = [fileURLToPath(import.meta.url), 'run-queue', paths.id, ...(o.headroom ? ['--headroom'] : [])];
+      spawn(process.execPath, args, { cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      return console.log(`작업 ${saved.length}개를 자동 배정했습니다. 대기열을 백그라운드로 시작했습니다 (진행은 status·보드에서)`);
+    }
+    console.log('확인이 필요합니다:');
+    for (const why of c.reasons) console.log(`  - ${why}`);
     if (!(await ask(`작업 ${plan.length}개를 이대로 배정할까요? [y/N] `))) return console.log('배정하지 않았습니다');
     let tasks;
     try {
