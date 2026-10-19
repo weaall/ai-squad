@@ -6,8 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import {
-  appendJsonl, isId, loadMembers, loadProjects, newId, projectPaths, readJsonl, readMemberDocs, setMemberToggle, updateTask,
+  appendJsonl, isId, loadMembers, loadProjects, newId, projectPaths, readJsonl, readMemberDocs, setMemberToggle, updateTask, writeJsonl,
 } from '../lib/store.mjs';
+import { answerInput, answerText, requestInput, validateInputRequest } from '../lib/input.mjs';
 import { buildState } from '../lib/state.mjs';
 import { validateMessage, validateOrder, validatePlan, validateTask, validateTaskPatch } from '../lib/validate.mjs';
 import { budgetGate, planOrder, saveOrder } from '../lib/runner.mjs';
@@ -20,7 +21,7 @@ import { decideApproval, decisionText, loadApprovals } from '../lib/approvals.mj
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
-const MAX_BODY = 16 * 1024;
+const MAX_BODY = 64 * 1024; // 입력 요청 미리보기 본문(8000자, 한글이면 ~24KB)이 들어가야 한다
 
 function send(res, code, body, type = 'application/json; charset=utf-8', extra = {}) {
   res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', ...extra });
@@ -256,6 +257,32 @@ export function startBoard({
         } catch (e) {
           return send(res, /이미/.test(e.message) ? 409 : 400, { error: e.message });
         }
+      }
+      if (url.pathname === '/api/input/request' || url.pathname === '/api/input/answer') {
+        if (typeof body.taskId !== 'string' || body.taskId.length > 60) return send(res, 400, { error: '작업 id 가 잘못됐습니다' });
+        const rows = readJsonl(p.tasks);
+        const i = rows.findIndex((t) => t.id === body.taskId);
+        if (i < 0) return send(res, 404, { error: '작업이 없습니다' });
+        const asking = url.pathname === '/api/input/request';
+        if (asking) {
+          const v = validateInputRequest(body, ids);
+          if (v.error) return send(res, 400, v);
+          if (rows[i].member !== v.from) return send(res, 403, { error: '자기 작업에만 입력을 요청할 수 있습니다' });
+          try {
+            rows[i] = requestInput(rows[i], v, at);
+          } catch (e) {
+            return send(res, 409, { error: e.message });
+          }
+        } else {
+          const r = answerInput(rows[i], body, at);
+          if (r.error) return send(res, rows[i].input ? 400 : 409, r);
+          rows[i] = r.task;
+          const msg = validateMessage({ from: 'human', to: r.task.member, kind: 'answer', taskId: r.task.id, text: answerText(r.task.inputs.at(-1)) }, ids);
+          if (!msg.error) appendJsonl(p.messages, { id: newId('M'), at, ...msg });
+        }
+        // ponytail: updateTask 와 같은 통째 다시 쓰기 — 동시 append 하나를 잃을 수 있다
+        writeJsonl(p.tasks, rows);
+        return send(res, asking ? 201 : 200, { task: rows[i] });
       }
       if (url.pathname === '/api/inbox') {
         try {

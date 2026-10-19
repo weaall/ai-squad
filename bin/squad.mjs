@@ -19,8 +19,12 @@ import { buildReport, dateKey, isDateKey, polishPrompt } from '../lib/report.mjs
 import { capture, captureName } from '../lib/capture.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { runnerStatuses, LOGIN_COMMAND } from '../lib/runners/index.mjs';
+import { withTaskLock } from '../lib/runners/lock.mjs';
+import { retryOnce } from '../lib/runners/retry.mjs';
 import { setSecret, secretsFile } from '../lib/secrets.mjs';
 import { ACTIONS, DECISIONS, decideApproval, decisionText, loadApprovals, requestApproval, validateApprovalRequest } from '../lib/approvals.mjs';
+import { INPUT_KINDS, requestInput, validateInputRequest } from '../lib/input.mjs';
+import { askRequest } from './ask.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const now = () => new Date().toISOString();
@@ -32,9 +36,13 @@ const HELP = `AI Squad CLI
   order <project> "<지시>" [--dry] [--auto] [--headroom]
                                            메인 AI(squad.config.json mainAi)가 계획·실행 순서를 만들고, 사람이 승인하면 배정
                                            --dry: 계획만 / --auto: 승인 뒤 배정하고, 한 번 더 승인하면 순서대로 실행
-  run <project> <member> [taskId] [--headroom]    멤버에게 작업 실행 (MEMBER.md 의 runner)
+  run <project> <member> [taskId] [--headroom] [--retry]    멤버에게 작업 실행 (MEMBER.md 의 runner). --retry: 실패 시 1회 재시도(시간 초과·잠금 충돌 제외)
   approve request <project> <from> <push|deploy|migrate|send|delete> "<무엇을>" [--reason 이유] [--scope 저장소·경로] [--task T-..]
                 [--details-file 설명.md] [--diff-file 변경.sql|.diff] [--files a,b] [--cmd "명령"]... [--risk 낮음|보통|높음] [--rollback "되돌리는 방법"]
+  ask <project> <from> preview|choice|form "<제목>" --task T-.. [--text 설명]
+      preview: [--to 받는 곳] [--subject 제목] --body 본문|--body-file 본문.txt   (발송하지 않음 — 사람이 미리보기를 승인한 뒤에만)
+      choice:  --option "id|라벨|캡처 경로"... (2개 이상)    form: --field "name[*]|라벨"... (* 는 필수, 비밀값 칸은 거부)
+                                           작업을 입력 대기로 멈춘다. 답은 answer 메시지로 온다
   approve list <project>                   승인 대기 목록 (approve 명령은 --demo 면 시연 파일에)
   approve yes|no <project> <approvalId> [--reason 사유]   승인·거절 (요청한 멤버에게 answer 메시지)
   auth status                              runner 별 연결 상태
@@ -46,7 +54,7 @@ const HELP = `AI Squad CLI
   task add <project> <member> "<제목>" [--detail 내용] [--after T-a,T-b]   (--after: 먼저 끝나야 하는 작업)
   task done <project> <taskId> [--summary 요약]
   task block <project> <taskId> [--reason 이유]
-  run-queue <project> [--max 2]            의존이 풀린 todo·검수 대기를 골라 담당 경로가 겹치지 않는 멤버끼리 동시에 실행
+  run-queue <project> [--max 2] [--retry]          의존이 풀린 todo·검수 대기를 골라 담당 경로가 겹치지 않는 멤버끼리 동시에 실행
   review <project> <taskId>                검수 대기(review) 작업을 검수 멤버가 통과/반려
   report <project> [--date YYYY-MM-DD] [--ai] [--demo]
                                            일일 보고 → <project>/.squad/reports/<날짜>.md (--ai: 메인 AI 로 문장 다듬기)
@@ -283,7 +291,11 @@ const commands = {
         process.exitCode = 1;
         return console.log('예산 확인을 넘지 못해 뒤 순서는 멈췄습니다');
       }
-      const res = await runMember({ root: ROOT, paths, member: m, task: t, members, headroom: Boolean(o.headroom) });
+      const res = await withTaskLock(path.join(paths.squad, 'locks'), t.id, () => runMember({ root: ROOT, paths, member: m, task: t, members, headroom: Boolean(o.headroom) }));
+      if (res.locked) {
+        console.log(`건너뜀: ${t.id} — 이미 다른 곳에서 실행 중입니다`);
+        continue;
+      }
       console.log(res.ok ? `${res.status === 'review' ? '검수 대기' : '완료'}: ${res.summary}` : `막힘: ${res.summary}`);
       if (!res.ok) {
         process.exitCode = 1;
@@ -307,7 +319,12 @@ const commands = {
     const wait = (task.dependsOn || []).filter((id) => tasks.find((t) => t.id === id && t.status !== 'done'));
     if (wait.length) fail(`선행 작업이 아직 끝나지 않았습니다: ${wait.join(', ')}`);
     if ((await gate(paths, members, m.id, `실행 · ${task.title}`, task.id)) !== true) return void (process.exitCode = 1);
-    const res = await runMember({ root: ROOT, paths, member: m, task, members, headroom: Boolean(o.headroom) });
+    const res = await withTaskLock(path.join(paths.squad, 'locks'), task.id, () =>
+      retryOnce(() => runMember({ root: ROOT, paths, member: m, task, members, headroom: Boolean(o.headroom) }), {
+        retry: Boolean(o.retry),
+        onRetry: (r) => console.log(`실패해서 한 번 더 실행합니다: ${String(r.summary).slice(0, 200)}`),
+      }));
+    if (res.locked) return console.log(`건너뜀: ${task.id} — 이미 다른 곳에서 실행 중입니다`);
     if (res.outside.length) console.log(`경고: 맡은 경로 밖 수정 ${res.outside.length}건 — 작업을 막힘으로 바꾸고 메인 오더에게 알렸습니다`);
     console.log(res.ok ? `${res.status === 'review' ? '검수 대기' : '완료'}: ${res.summary}` : `막힘: ${res.summary}`);
     if (!res.ok) process.exitCode = 1;
@@ -319,7 +336,7 @@ const commands = {
     if (!Number.isInteger(max) || max < 1 || max > 8) fail('--max 는 1~8');
     console.log(`대기열 실행 — 동시에 ${max}개까지`);
     const r = await runQueue({
-      root: ROOT, paths, max, headroom: Boolean(o.headroom),
+      root: ROOT, paths, max, headroom: Boolean(o.headroom), retry: Boolean(o.retry),
       loadMembers: () => loadMembers(paths),
       gate: (subject, what, taskId) => gate(paths, members, subject, what, taskId),
     });
@@ -482,6 +499,34 @@ const commands = {
     fail('사용법: approve request|list|yes|no ...');
   },
 
+  ask([projectId, from, kind, title], o) {
+    const { paths, members } = ctx(projectId, { demo: Boolean(o.demo) });
+    if (!o.task) fail('--task 작업 id 가 필요합니다');
+    let body = o.body;
+    if (o['body-file']) {
+      try {
+        body = fs.readFileSync(path.resolve(o['body-file']), 'utf8');
+      } catch {
+        fail(`본문 파일을 읽지 못했습니다: ${o['body-file']}`);
+      }
+    }
+    const v = validateInputRequest(askRequest(from, kind, title, { ...o, body }), members.map((m) => m.id));
+    if (v.error) fail(v.error);
+    const t = readJsonl(paths.tasks).find((x) => x.id === o.task);
+    if (!t) fail(`작업이 없습니다: ${o.task}`);
+    if (t.member !== v.from) fail('자기 작업에만 입력을 요청할 수 있습니다');
+    let next;
+    try {
+      next = requestInput(t, v, now());
+    } catch (e) {
+      fail(e.message);
+    }
+    updateTask(paths.tasks, t.id, { status: next.status, input: next.input });
+    emit(paths, v.from, { type: 'log', status: 'blocked', text: `입력 대기 · ${INPUT_KINDS[v.kind]} · ${v.title}` });
+    const send = v.kind === 'preview' ? ' 발송은 하지 않았습니다 — 사람이 미리보기를 승인한 뒤에만 보내세요.' : '';
+    return console.log(`${t.id} → 입력 대기(${INPUT_KINDS[v.kind]}). 보드에서 답하면 answer 메시지로 옵니다. 그때까지 이 작업을 멈추세요.${send}`);
+  },
+
   async auth([sub, name]) {
     const config = loadConfig(ROOT);
     if (sub === 'status' || !sub) {
@@ -554,13 +599,15 @@ const { values, positionals } = parseArgs({
   allowPositionals: true,
   strict: false,
   options: {
-    dry: { type: 'boolean' }, headroom: { type: 'boolean' }, demo: { type: 'boolean' }, port: { type: 'string' }, kind: { type: 'string' },
+    dry: { type: 'boolean' }, headroom: { type: 'boolean' }, retry: { type: 'boolean' }, demo: { type: 'boolean' }, port: { type: 'string' }, kind: { type: 'string' },
     task: { type: 'string' }, status: { type: 'string' }, detail: { type: 'string' }, summary: { type: 'string' },
     reason: { type: 'string' }, name: { type: 'string' }, auto: { type: 'boolean' }, scope: { type: 'string' },
     max: { type: 'string' }, date: { type: 'string' }, ai: { type: 'boolean' }, member: { type: 'string' }, width: { type: 'string' },
     height: { type: 'string' }, take: { type: 'boolean' }, project: { type: 'string' }, after: { type: 'string' },
     'details-file': { type: 'string' }, details: { type: 'string' }, 'diff-file': { type: 'string' }, files: { type: 'string' },
     cmd: { type: 'string', multiple: true }, risk: { type: 'string' }, rollback: { type: 'string' },
+    text: { type: 'string' }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' }, 'body-file': { type: 'string' },
+    option: { type: 'string', multiple: true }, field: { type: 'string', multiple: true },
   },
 });
 const [cmd = 'help', ...rest] = positionals;
