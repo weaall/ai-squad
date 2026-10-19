@@ -26,6 +26,7 @@ import { setSecret, secretsFile } from '../lib/secrets.mjs';
 import { ACTIONS, DECISIONS, decideApproval, decisionText, loadApprovals, requestApproval, validateApprovalRequest } from '../lib/approvals.mjs';
 import { INPUT_KINDS, requestInput, validateInputRequest } from '../lib/input.mjs';
 import { askRequest } from './ask.mjs';
+import { afterMessage } from './msg.mjs';
 import {
   checkPlugin, expandPath, isPortable, isTrusted, mergedProjects, migrate, migrateFiles, readInstalled, resolveProject, setupPlan, toolList,
 } from './setup.mjs';
@@ -61,6 +62,8 @@ const HELP = `AI Squad CLI
   auth clear <runner>                      저장한 키 지우기
   auth login                               claude 로그인 (claude auth login)
   msg <project> <from> <to> "<내용>" [--kind note] [--task T-..]
+                                           --kind question: 받는 멤버에게 답변 작업(easy)을 만들고 run-queue 를 백그라운드로
+                                           --kind answer --task T: T 가 답을 기다리면(입력 대기·막힘) 다시 todo
   log <project> <member> "<내용>" [--status working|idle|blocked]
   task add <project> <member> "<제목>" [--detail 내용] [--after T-a,T-b]   (--after: 먼저 끝나야 하는 작업)
   task done <project> <taskId> [--summary 요약]
@@ -682,6 +685,20 @@ const commands = {
     const { paths, members } = ctx(projectId);
     const msg = addMessage(paths, members, { from, to, text, kind: o.kind, taskId: o.task });
     console.log(`메시지 ${msg.id}`);
+    const workers = members.map((m) => m.id).filter((id) => id !== 'order');
+    const next = afterMessage(msg, { tasks: readJsonl(paths.tasks), workers, squadRoot: ROOT, project: paths.id });
+    if (next.resume) {
+      updateTask(paths.tasks, next.resume, { status: 'todo' });
+      console.log(`${next.resume} → 다시 todo (답이 왔습니다)`);
+    }
+    if (next.task) {
+      const t = addTask(paths, members, next.task, from);
+      console.log(`${to} 에게 답변 작업 ${t.id}`);
+    }
+    // 새로 할 일이 생기면 run-queue 를 백그라운드로 (order 자동 배정과 같은 방식)
+    if (next.task || next.resume) {
+      spawn(process.execPath, [fileURLToPath(import.meta.url), 'run-queue', paths.id], { cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    }
   },
 
   log([projectId, memberId, text], o) {
