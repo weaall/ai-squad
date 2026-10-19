@@ -17,6 +17,7 @@ import { loadConfig } from '../lib/config.mjs';
 import { finishReview } from '../lib/runner.mjs';
 import { buildReport, dateKey } from '../lib/report.mjs';
 import { addInbox, doneInbox, takeInbox } from '../lib/inbox.mjs';
+import { budgetTokens } from '../lib/state.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { values: o, positionals } = parseArgs({
@@ -51,8 +52,14 @@ const task = (member, title, detail, status = 'todo', ago = 0, extra = {}) =>
   appendJsonl(paths.tasks, { id: newId('T'), title, detail, member, status, createdBy: 'order', createdAt: iso(-ago), updatedAt: iso(-ago), summary: '', demo: true, ...extra });
 const setTask = (id, patch) => updateTask(paths.tasks, id, patch);
 const tool = (member, name, p) => ev(member, { type: 'tool', tool: name, path: p });
-// 시연용 사용량 — 실제 값이 아니다
-const usage = (input, output, cacheRead = 0) => ({ input, output, cacheRead, cacheWrite: Math.round(input / 4) });
+// 예산은 보드와 같은 기준(budgetTokens 환산)으로 센다. 0 은 상한 없음.
+const daily = loadConfig(ROOT).budget.daily;
+const usedToday = () => readJsonl(paths.events).filter((e) => e.usage && dateKey(e.at) === dateKey(Date.now())).reduce((n, e) => n + budgetTokens(e.usage), 0);
+// 시연용 사용량 — 실제 값이 아니다. 상한이 있으면 바퀴가 돌아도 상한의 95% 를 넘기지 않는다(80% 경고는 보이게).
+const usage = (input, output, cacheRead = 0) => {
+  const u = { input, output, cacheRead, cacheWrite: Math.round(input / 4) };
+  return daily > 0 && usedToday() + budgetTokens(u) > daily * 0.95 ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : u;
+};
 const end = (member, taskId, u, ago = 0) => ev(member, { type: 'end', taskId, status: 'idle', text: '완료', usage: u }, ago);
 const finish = (t, summary, u) => {
   setTask(t.id, { status: 'done', summary, usage: u });
@@ -91,11 +98,10 @@ if (!readJsonl(paths.messages).length) {
   });
   msg('site', 'biz-docs', 'handoff', '검수 부탁드립니다: 검진기관 안내 페이지 문구 보강', ctx.review.id, 17 * m);
   // v0.4 예산: 오늘 사용량을 하루 상한의 82% 쯤으로(시연 값) → 상단 막대가 노랗게, 오더의 예산 확인 카드
-  const daily = loadConfig(ROOT).budget.daily;
   if (daily > 0) {
-    const used = readJsonl(paths.events).filter((e) => e.usage && dateKey(e.at) === dateKey(Date.now())).reduce((n, e) => n + e.usage.input + e.usage.output + e.usage.cacheRead + e.usage.cacheWrite, 0);
-    const need = Math.max(0, Math.round(daily * 0.82) - used);
-    ev('survey-report', { type: 'end', status: 'idle', text: '완료', usage: { input: Math.round(need * 0.2), output: Math.round(need * 0.05), cacheRead: Math.round(need * 0.7), cacheWrite: need - Math.round(need * 0.2) - Math.round(need * 0.05) - Math.round(need * 0.7) } }, 15 * m);
+    // 캐시 없이 입력·출력만 쓰면 환산 토큰 = 그대로 합이라 82% 에 정확히 맞는다
+    const need = Math.max(0, Math.round(daily * 0.82) - usedToday());
+    ev('survey-report', { type: 'end', status: 'idle', text: '완료', usage: { input: Math.round(need * 0.8), output: need - Math.round(need * 0.8), cacheRead: 0, cacheWrite: 0 } }, 15 * m);
     requestApproval(paths, {
       from: 'order', action: 'budget', text: '예산 82% — 계획 · 대시보드 부서 범주 필터 일정 다시 잡기',
       reason: '오늘 전체 사용량이 하루 상한의 82% 입니다 (시연 값)', scope: '오늘 남은 토큰 예산', demo: true,
