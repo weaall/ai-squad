@@ -1,0 +1,6 @@
+feat: 입력 요청 순수 함수 — 검증·비밀값 칸 거부·입력 대기↔todo 전환
+
+lib/input.mjs: preview(발송 미리보기)·choice(캡처 썸네일 안 고르기)·fields(필수 정보 칸) 검증.
+비밀값으로 보이는 칸 이름·라벨과 키 모양 값은 거부한다. requestInput/answerInput 과 node:test.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

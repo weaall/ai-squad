@@ -7,3 +7,7 @@ node_modules/
 
 # 외부 runner 키는 %APPDATA%i-squad\secrets.json 에 둔다. 혹시 저장소에 만들어도 올리지 않는다
 .squad-secrets.json
+
+# 이 저장소 자체 스쿼드의 실행 기록
+.squad/*.jsonl
+.squad/reports/
