@@ -1344,6 +1344,7 @@ function renderPlan() {
   box.hidden = false;
   box.innerHTML = `<div class="plan-head"><b>계획</b><span class="muted">작업 ${order.plan.length}개 · 아직 저장하지 않았습니다 · 숫자는 실행 순서</span>
       <div class="plan-actions"><button type="button" class="btn btn-ghost" id="plan-cancel">취소</button><button type="button" class="btn btn-primary" id="plan-confirm">이대로 배정</button></div></div>
+    <div class="plan-ask">${esc(order.instruction || '')}</div>
     ${planGroups()}`;
   paintSprites();
   syncSide();
@@ -1388,12 +1389,39 @@ async function submitOrder(text) {
 async function sendDesktop(text) {
   try {
     const r = await api('/api/inbox', { project: ui.project, text });
-    $('#order-text').value = '';
+    clearOrderText();
     toast(`데스크톱 세션 inbox 에 넣었습니다 (${r.id})`);
     load();
   } catch (x) {
     $('#order-error').textContent = x.message;
   }
+}
+// 지시 칸: 내용만큼 늘린다(최대 8줄은 CSS max-height, 넘치면 칸 안 스크롤)
+function fitOrderText() {
+  const t = $('#order-text');
+  t.style.height = 'auto';
+  t.style.height = `${t.scrollHeight + t.offsetHeight - t.clientHeight}px`;
+}
+$('#order-text').addEventListener('input', fitOrderText);
+$('#order-text').addEventListener('focus', fitOrderText);
+$('#order-text').addEventListener('keydown', (e) => {
+  const t = e.currentTarget;
+  if (e.isComposing) return; // 한글 조합 중 Enter 는 조합 확정
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    $('#order-form').requestSubmit();
+  } else if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+    e.preventDefault();
+    t.setRangeText('  ', t.selectionStart, t.selectionEnd, 'end');
+    fitOrderText();
+  } else if (e.key === 'Escape') {
+    // Tab 을 들여쓰기로 쓰므로 Esc 로 다음 칸(보내기 버튼)에 포커스를 넘긴다
+    $('#order-submit').focus();
+  }
+});
+function clearOrderText() {
+  $('#order-text').value = '';
+  fitOrderText();
 }
 $('#order-to').addEventListener('change', () => {
   const desk = $('#order-to').value === 'desktop';
@@ -1414,7 +1442,7 @@ async function confirmPlan() {
     const r = await api('/api/order/confirm', { project: ui.project, instruction: order.instruction, plan: order.plan });
     order.plan = null;
     renderPlan();
-    $('#order-text').value = '';
+    clearOrderText();
     toast(`작업 ${r.tasks.length}개를 배정했습니다`);
     load();
   } catch (x) {
