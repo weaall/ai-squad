@@ -6,7 +6,7 @@ runner: claude
 model:
 headroom: true
 owns:
-  - "server/index.mjs"
+  - "server/*.mjs"
   - "lib/**"
 reads:
   - "docs/SPEC.md"
@@ -29,6 +29,8 @@ plugins:
 보드 서버(server/index.mjs)의 API·SSE·접속 토큰과 lib/ 의 순수 함수(검증·상태 판단·저장). 새 로직은 순수 함수로 떼고 node:test 를 붙인다.
 
 ## 지금 작업
+
+인계: T-mvewgg01-ffc7: squad board 가 이제 감시 프로세스로 자식 보드를 띄운다(bin/board-watch.mjs). 자식 e
 
 ## 인계 메모
 
