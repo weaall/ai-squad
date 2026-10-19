@@ -37,6 +37,7 @@
       <a href="#report" role="tab" class="tab" id="tab-report" aria-controls="panel-report">보고</a>
     </nav>
     <div class="top-right">
+      <button type="button" class="confirm-badge ask-badge" id="ask-badge" aria-haspopup="dialog" aria-controls="ask" title="입력 요청 창 열기" hidden>입력 대기 <b id="ask-count">0</b></button>
       <button type="button" class="confirm-badge" id="confirm-badge" aria-controls="side" aria-expanded="false" title="확인할 일 패널 열고 닫기">확인 대기 <b id="confirm-count">0</b></button>
       <button type="button" class="conn-chip" id="conn-chip" aria-haspopup="dialog" aria-expanded="false" aria-controls="conn-pop"><i aria-hidden="true"></i>연결 <b id="conn-count">-</b></button>
       <button type="button" id="fx-toggle" class="icon-btn fx-toggle" aria-pressed="false" aria-label="효과 줄이기" title="빛 알갱이·파동·캐릭터 움직임을 줄입니다">
@@ -194,6 +195,26 @@
       </div>
       <div class="modal-body" id="modal-body"></div>
     </div>
+  </dialog>
+
+  <!-- 입력 요청: 멤버가 사람의 답을 기다릴 때만 화면을 가린다. 승인은 오른쪽 확인 패널. -->
+  <dialog class="modal ask" id="ask" aria-labelledby="ask-title">
+    <form class="modal-box" id="ask-form" method="dialog" novalidate>
+      <div class="modal-head">
+        <div id="ask-avatar"></div>
+        <div class="modal-title-wrap">
+          <h2 id="ask-title"></h2>
+          <p id="ask-sub" class="muted"></p>
+        </div>
+        <span class="ask-pos muted" id="ask-pos"></span>
+      </div>
+      <div class="modal-body" id="ask-body"></div>
+      <div class="ask-foot">
+        <label class="ask-note"><span>메모 (선택)</span><textarea id="ask-note" class="input" rows="1" maxlength="500" placeholder="멤버에게 함께 전할 말"></textarea></label>
+        <p class="form-error" id="ask-error" role="alert"></p>
+        <div class="ask-actions" id="ask-actions"></div>
+      </div>
+    </form>
   </dialog>
 
   <div class="popover" id="tech-pop" role="dialog" aria-label="사용 기술" hidden></div>

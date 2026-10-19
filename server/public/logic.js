@@ -52,3 +52,25 @@ export function renderDiff(text, maxLines = 1500) {
 
 /** 예산 막대: 비율 → 단계(ok·warn·over). */
 export const budgetLevel = (ratio, warn = 0.8) => (ratio >= 1 ? 'over' : ratio >= warn ? 'warn' : 'ok');
+
+/** 입력 대기 작업: 먼저 요청한 것부터. key 는 같은 요청이면 같다. */
+export const inputKey = (t) => `${t.id}|${t.input.at}`;
+export const pendingInputs = (tasks = []) =>
+  tasks.filter((t) => t.status === 'input' && t.input).sort((a, b) => String(a.input.at).localeCompare(String(b.input.at)));
+
+/** 모달 값 → /api/input/answer 본문 | { error }. 서버도 같은 검증을 하지만 필수 칸은 보내기 전에 알린다. */
+export function inputPayload(task, { approve, choice, values = {}, note = '' }) {
+  const req = task.input;
+  const body = { taskId: task.id, ...(note.trim() ? { note: note.trim() } : {}) };
+  if (req.kind === 'preview') {
+    if (typeof approve !== 'boolean') return { error: '보낼지 정해 주세요' };
+    return { body: { ...body, approve } };
+  }
+  if (req.kind === 'choice') {
+    if (!req.options.some((o) => o.id === choice)) return { error: '안을 하나 고르세요' };
+    return { body: { ...body, choice } };
+  }
+  const miss = req.fields.filter((f) => f.required && !String(values[f.name] ?? '').trim());
+  if (miss.length) return { error: `필수 칸을 채워 주세요: ${miss.map((f) => f.label).join(', ')}`, missing: miss.map((f) => f.name) };
+  return { body: { ...body, values: Object.fromEntries(req.fields.map((f) => [f.name, String(values[f.name] ?? '').trim()])) } };
+}

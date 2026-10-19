@@ -1,6 +1,6 @@
 // AI Squad 보드 화면. 프레임워크 없이 상태 하나를 받아 전부 다시 그린다.
 import { SIZE, character, drawCharacter } from './pixel.js';
-import { budgetLevel, canApprove, confirmItems, looksLikeDiff, panelDecision, renderDiff } from './logic.js';
+import { budgetLevel, canApprove, confirmItems, inputKey, inputPayload, looksLikeDiff, panelDecision, pendingInputs, renderDiff } from './logic.js';
 const $ = (s) => document.querySelector(s);
 const STATUS = { working: '일하는 중', idle: '대기', blocked: '막힘' };
 const KIND = { order: '지시', handoff: '인계', question: '질문', answer: '답변', report: '완료 보고', note: '메모' };
@@ -138,6 +138,7 @@ async function load() {
       ui.data = data;
       render();
       syncSide();
+      syncAsk();
       try {
         net.sync(data, first);
         for (const m of fresh) net.message(m);
@@ -1165,6 +1166,131 @@ function gotoTask(id) {
     el.classList.add('is-fresh');
   });
 }
+
+// ── 입력 요청 모달: 멤버가 사람의 답을 기다리는 작업. 화면을 가리는 건 이것뿐(승인은 확인 패널) ──
+const INPUT_KIND = { preview: '발송 미리보기', choice: '디자인안 선택', fields: '필수 정보' };
+const ask = $('#ask');
+// shown: 한 번 띄운 요청(닫으면 다시 저절로 뜨지 않는다 — 상단 [입력 대기] 로 다시 연다)
+const askUi = { key: null, shown: new Set(), busy: false, opener: null };
+const askList = () => pendingInputs(ui.data?.tasks);
+
+/** 상태가 바뀔 때마다: 배지를 맞추고, 처음 보는 요청이 있으면 띄운다. 보던 요청이 처리됐으면 다음으로. */
+function syncAsk() {
+  const list = askList();
+  $('#ask-badge').hidden = !list.length;
+  $('#ask-count').textContent = list.length;
+  if (ask.open) {
+    if (!list.length) return ask.close();
+    return renderAsk(list.find((t) => inputKey(t) === askUi.key) || list[0]);
+  }
+  const fresh = list.find((t) => !askUi.shown.has(inputKey(t)));
+  if (fresh) openAsk(fresh);
+}
+function openAsk(task) {
+  if (!task) return;
+  askUi.opener = document.activeElement;
+  renderAsk(task);
+  ask.showModal();
+  (ask.querySelector('#ask-body input:not([type="hidden"])') || ask.querySelector('.ask-actions .btn-primary'))?.focus();
+}
+function renderAsk(task) {
+  const key = inputKey(task);
+  askUi.shown.add(key);
+  if (askUi.key === key && ask.open) return renderAskPos(); // 쓰던 값·고른 안 유지
+  askUi.key = key;
+  const r = task.input;
+  $('#ask-avatar').innerHTML = avatar(r.from, 'lg');
+  $('#ask-title').textContent = r.title;
+  $('#ask-sub').innerHTML = `<span class="tag">${INPUT_KIND[r.kind] || esc(r.kind)}</span>${esc(nameOf(r.from))} · ${esc(task.title)} <span class="mono">${esc(task.id)}</span> · <time title="${esc(fullTime(r.at))}">${rel(r.at)}</time>`;
+  const intro = r.text ? `<p class="ask-text">${esc(r.text)}</p>` : '';
+  let body, actions;
+  if (r.kind === 'preview') {
+    const p = r.preview;
+    body = `${intro}<dl class="kv sc-kv ask-mail">${p.to ? `<dt>받는 곳</dt><dd>${esc(p.to)}</dd>` : ''}${p.subject ? `<dt>제목</dt><dd>${esc(p.subject)}</dd>` : ''}</dl>
+      <pre class="ask-preview" tabindex="0" aria-label="보낼 본문">${esc(p.body)}</pre>`;
+    actions = `<button type="submit" class="btn btn-danger" data-approve="0">보내지 말 것</button><button type="submit" class="btn btn-primary" data-approve="1">보내도 됨</button>`;
+  } else if (r.kind === 'choice') {
+    body = `${intro}<div class="ask-choices" role="radiogroup" aria-label="디자인안">${r.options.map((o, i) => `<label class="ask-opt">
+      <input type="radio" name="ask-choice" value="${esc(o.id)}">
+      <span class="thumb"><img src="${capUrl(o.capture)}" alt="${esc(o.label)} 캡처" loading="lazy" width="320" height="200"></span>
+      <span class="ask-opt-name"><b>${String.fromCharCode(65 + i)}</b>${esc(o.label)}</span>
+      <a class="more-link" href="${capUrl(o.capture)}" target="_blank" rel="noopener">크게 보기</a></label>`).join('')}</div>`;
+    actions = `<button type="submit" class="btn btn-primary">이 안으로</button>`;
+  } else {
+    body = `${intro}<div class="ask-fields">${r.fields.map((f) => `<label class="ask-field"><span>${esc(f.label)}${f.required ? ' <em>필수</em>' : ''}</span>
+      <input class="input" name="${esc(f.name)}" maxlength="1000" autocomplete="off"${f.required ? ' aria-required="true"' : ''}></label>`).join('')}</div>`;
+    actions = `<button type="submit" class="btn btn-primary">보내기</button>`;
+  }
+  $('#ask-body').innerHTML = body;
+  $('#ask-note').value = '';
+  $('#ask-error').textContent = '';
+  $('#ask-actions').innerHTML = `<button type="button" class="btn btn-ghost" data-ask="later">나중에</button><button type="button" class="btn btn-ghost" data-ask="next">다음 요청</button><span class="grow"></span>${actions}`;
+  renderAskPos();
+  paintSprites();
+}
+function renderAskPos() {
+  const list = askList();
+  const i = list.findIndex((t) => inputKey(t) === askUi.key);
+  $('#ask-pos').textContent = list.length > 1 ? `${i + 1} / ${list.length}` : '';
+  ask.querySelector('[data-ask="next"]').hidden = list.length < 2;
+}
+async function submitAsk(submitter) {
+  const task = askList().find((t) => inputKey(t) === askUi.key);
+  if (!task || askUi.busy) return;
+  const form = $('#ask-form');
+  const err = $('#ask-error');
+  const values = Object.fromEntries([...form.querySelectorAll('.ask-field input')].map((x) => [x.name, x.value]));
+  const r = inputPayload(task, {
+    approve: submitter?.dataset.approve ? submitter.dataset.approve === '1' : undefined,
+    choice: form.querySelector('[name="ask-choice"]:checked')?.value,
+    values,
+    note: $('#ask-note').value,
+  });
+  form.querySelectorAll('.ask-field input').forEach((x) => x.removeAttribute('aria-invalid'));
+  if (r.error) {
+    err.textContent = r.error;
+    for (const n of r.missing || []) form.querySelector(`.ask-field input[name="${CSS.escape(n)}"]`)?.setAttribute('aria-invalid', 'true');
+    return (form.querySelector('[aria-invalid="true"]') || form.querySelector('[name="ask-choice"]'))?.focus();
+  }
+  askUi.busy = true;
+  form.querySelectorAll('button').forEach((b) => (b.disabled = true));
+  try {
+    await api('/api/input/answer', { project: ui.project, ...r.body });
+    toast('답을 보냈습니다. 작업이 할 일로 돌아갑니다');
+  } catch (x) {
+    err.textContent = x.message;
+  } finally {
+    askUi.busy = false;
+    form.querySelectorAll('button').forEach((b) => (b.disabled = false));
+  }
+  await load();
+}
+// form method=dialog 이지만 Enter·단추로 저절로 닫히지 않게 막고 직접 보낸다
+$('#ask-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  submitAsk(e.submitter);
+});
+$('#ask-actions').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-ask]');
+  if (!b) return;
+  if (b.dataset.ask === 'later') return ask.close();
+  const list = askList();
+  const i = list.findIndex((t) => inputKey(t) === askUi.key);
+  renderAsk(list[(i + 1) % list.length]);
+});
+// 메모 칸: Ctrl+Enter 로 보내기(미리보기는 어느 쪽인지 골라야 하므로 제외)
+$('#ask-note').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !ask.querySelector('[data-approve]')) {
+    e.preventDefault();
+    submitAsk();
+  }
+});
+ask.addEventListener('close', () => {
+  for (const t of askList()) askUi.shown.add(inputKey(t)); // 나중에: 지금 있는 요청은 저절로 다시 뜨지 않는다
+  askUi.key = null;
+  if (askUi.opener?.isConnected) askUi.opener.focus();
+});
+$('#ask-badge').addEventListener('click', () => openAsk(askList()[0]));
 
 // ── 이벤트 연결 ──
 function setView(v) {
