@@ -141,6 +141,9 @@ test('보드 서버: 토큰·상태·POST·승인·켜기끄기·SSE·보안', a
           buf += c;
           if (buf.includes('event: hello') && !appended) {
             appended = true;
+            // 화면이 재접속 때 version 을 비교한다 — env 없으면 null
+            const hello = JSON.parse(buf.match(/event: hello\ndata: (.*)\n/)[1]);
+            assert.deepEqual(hello, { project: 'p', version: process.env.SQUAD_BOARD_VERSION ?? null });
             appendJsonl(path.join(root, 'data', 'events.jsonl'), { at: new Date().toISOString(), project: 'p', member: 'site', type: 'log', text: '시험' });
           }
           if (buf.includes('event: change')) {

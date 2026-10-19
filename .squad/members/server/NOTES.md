@@ -1,5 +1,5 @@
 ## 인계 메모
-- SSE hello 이벤트 data 에 version(env SQUAD_BOARD_VERSION, 없으면 null) — 화면이 재접속 때 비교해 새로고침(ui 인계). 실행 규칙에 '보드 서버 직접 띄우지 않기' 한 줄.
+- SSE hello 이벤트 data 에 version(env SQUAD_BOARD_VERSION, 없으면 null) — 화면이 재접속 때 비교해 새로고침(ui 인계 T-mvewox3z-bf45 처리, index.test.mjs 가 hello 모양 확인). env 는 bin/board-watch.mjs 가 runningHead 로 넣음. 실행 규칙에 '보드 서버 직접 띄우지 않기' 한 줄.
 - GET /api/usage/headroom: lib/headroom.mjs savingsCache 가 5분마다 `headroom savings --json --days 7` → {at, data(날것 JSON)}, 없으면 404. startBoard savings 옵션(가짜 planner 면 null).
 - weekUsage days[] 에 total(날것 토큰)·costUsd·runners{r:{total,costUsd}} 추가 — 사용량 탭은 events 대신 이것을 쓰면 정확.
 - 토큰 아끼기 2단계: runMember 가 r.sessionId 를 task.sessionId·sessionKey('<멤버>:<runner>', 대체면 claude)로 저장, 다음 실행은 저장본을 다시 읽어 키가 같을 때만 exec({resume}) — reassign·runner 변경 땐 자동으로 새 세션.
