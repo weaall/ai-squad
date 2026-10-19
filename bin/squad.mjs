@@ -795,7 +795,12 @@ const commands = {
     const { startBoard } = await import('../server/index.mjs');
     const port = Number(o.port || 4777);
     if (!Number.isInteger(port) || port < 1 || port > 65535) fail('--port 가 잘못됐습니다');
-    await startBoard({ root: ROOT, port, demo: Boolean(o.demo) });
+    // 바깥 실행은 감시 프로세스, 실제 서버는 감시 프로세스가 띄운 자식(SQUAD_BOARD_CHILD=1)
+    if (process.env.SQUAD_BOARD_CHILD !== '1') {
+      const { superviseBoard } = await import('./board-watch.mjs');
+      return superviseBoard({ root: ROOT, port, demo: Boolean(o.demo), script: fileURLToPath(import.meta.url) });
+    }
+    await startBoard({ root: ROOT, port, demo: Boolean(o.demo), ...(process.env.SQUAD_BOARD_TOKEN ? { token: process.env.SQUAD_BOARD_TOKEN } : {}) });
   },
 };
 
