@@ -34,6 +34,7 @@
       <a href="#tasks" role="tab" class="tab" id="tab-tasks" aria-controls="panel-tasks">작업</a>
       <a href="#chat" role="tab" class="tab" id="tab-chat" aria-controls="panel-chat">대화</a>
       <a href="#report" role="tab" class="tab" id="tab-report" aria-controls="panel-report">보고</a>
+      <a href="#usage" role="tab" class="tab" id="tab-usage" aria-controls="panel-usage">사용량</a>
     </nav>
     <div class="top-right">
       <button type="button" class="confirm-badge ask-badge" id="ask-badge" aria-haspopup="dialog" aria-controls="ask" title="입력 요청 창 열기" hidden>입력 대기 <b id="ask-count">0</b></button>
@@ -136,8 +137,17 @@
         <button type="button" class="btn btn-primary" id="report-make">오늘 보고 만들기</button>
         <span class="panel-sub" id="report-sub">규칙 기반 요약입니다. 문장을 다듬으려면 터미널에서 <code>squad report &lt;project&gt; --ai</code></span>
       </div>
-      <div class="week-panel" id="week-panel" aria-label="이번 주 사용"></div>
       <div class="report-body scroll md" id="report-body"></div>
+    </section>
+
+    <section id="panel-usage" class="tabpanel usage-panel" role="tabpanel" aria-labelledby="tab-usage" hidden>
+      <div class="kpis" id="use-kpis"></div>
+      <div class="use-grid">
+        <div class="panel use-box"><div class="week-panel" id="week-panel" aria-label="이번 주 runner 별 사용"></div></div>
+        <div class="panel use-box" id="use-save" aria-label="아낀 양"></div>
+        <div class="panel use-box scroll" id="use-members" aria-label="멤버별 사용"></div>
+        <div class="panel use-box scroll" id="use-top" aria-label="비싼 작업 상위 10"></div>
+      </div>
     </section>
 
     <section id="panel-chat" class="tabpanel panel convo-panel" role="tabpanel" aria-labelledby="tab-chat" hidden>

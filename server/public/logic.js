@@ -179,3 +179,96 @@ export function topMembers(week, n = 5) {
   for (const d of week?.days || []) for (const [m, v] of Object.entries(d.byMember || {})) sum[m] = (sum[m] || 0) + v;
   return Object.entries(sum).sort((a, b) => b[1] - a[1]).slice(0, n);
 }
+
+// ── 사용량 탭 ──
+const tokOf = (u) => (u.input || 0) + (u.output || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0);
+/** 예산 기준 토큰 — 서버 lib/state.mjs budgetTokens 와 같은 환산(캐시 읽기 10%, 쓰기 125%). */
+export const budgetTok = (u) => Math.round((u.input || 0) + (u.output || 0) + (u.cacheRead || 0) * 0.1 + (u.cacheWrite || 0) * 1.25);
+const blank = () => ({ total: 0, budget: 0, cost: 0, costed: false });
+const addUse = (s, u) => {
+  s.total += tokOf(u);
+  s.budget += budgetTok(u);
+  if (Number.isFinite(u.costUsd)) (s.cost += u.costUsd), (s.costed = true);
+  return s;
+};
+
+/**
+ * 이번 주(since 이후) usage 이벤트로 사용량 탭 숫자를 만든다 — 작업 단위는 end 이벤트(taskId)를 더한다.
+ * truncated: 서버가 보낸 이벤트(최근 500개)가 since 까지 닿지 않아 실제보다 적을 수 있음.
+ * agEstUsd: Antigravity 로 돈 토큰을 Claude 의 같은 주 단가(US$/예산 토큰)로 바꾼 추정값. Claude 비용 기록이 없으면 null.
+ */
+export function usageReport({ events = [], tasks = [], members = [] }, since) {
+  const evs = events.filter((e) => e.usage && Date.parse(e.at) >= since);
+  const week = blank();
+  const runner = {};
+  const mem = {};
+  const task = {};
+  for (const e of evs) {
+    const u = e.usage;
+    const r = u.runner || 'claude';
+    addUse(week, u);
+    addUse((runner[r] ??= blank()), u);
+    const m = (mem[e.member] ??= { ...blank(), ids: new Set(), bases: [], runners: {} });
+    addUse(m, u);
+    if (Number.isFinite(u.base)) m.bases.push(u.base);
+    m.runners[r] = (m.runners[r] || 0) + budgetTok(u);
+    if (e.taskId) {
+      m.ids.add(e.taskId);
+      addUse((task[e.taskId] ??= { id: e.taskId, member: e.member, runner: r, ...blank() }), u);
+    }
+  }
+  const title = new Map(tasks.map((t) => [t.id, t.title]));
+  const model = new Map(members.map((m) => [m.id, m.model || '']));
+  const c = runner.claude;
+  const rate = c?.costed && c.budget ? c.cost / c.budget : null;
+  return {
+    truncated: events.length >= 500 && Date.parse(events[0]?.at) > since,
+    week,
+    runner,
+    members: Object.entries(mem)
+      .map(([id, m]) => ({
+        id, total: m.total, budget: m.budget, cost: m.costed ? m.cost : null, tasks: m.ids.size,
+        avgBase: m.bases.length ? Math.round(m.bases.reduce((a, b) => a + b, 0) / m.bases.length) : null,
+        perTask: m.ids.size ? Math.round(m.total / m.ids.size) : null,
+        runner: Object.entries(m.runners).sort((a, b) => b[1] - a[1])[0][0],
+        model: model.get(id) || '',
+      }))
+      .sort((a, b) => b.budget - a.budget),
+    top: Object.values(task)
+      .map((t) => ({ ...t, title: title.get(t.id) || t.id, cost: t.costed ? t.cost : null }))
+      .sort((a, b) => (b.cost ?? -1) - (a.cost ?? -1) || b.budget - a.budget)
+      .slice(0, 10),
+    agEstUsd: rate === null || !runner.antigravity ? null : runner.antigravity.budget * rate,
+  };
+}
+
+/**
+ * 서버 week.days(전체 기록 집계) 합 → 이번 주 예산 기준·날것 토큰·비용, runner 별 같은 값.
+ * agEstUsd: Antigravity 예산 토큰 × Claude 이번 주 단가(비용 ÷ 예산 토큰). Claude 비용이 없으면 null.
+ */
+export function weekTotals(week) {
+  const w = { budget: 0, total: 0, cost: 0, runner: {} };
+  for (const d of week?.days || []) {
+    w.budget += d.tokens || 0;
+    w.total += d.total || 0;
+    w.cost += d.costUsd || 0;
+    for (const r of new Set([...Object.keys(d.byRunner || {}), ...Object.keys(d.runners || {})])) {
+      const s = (w.runner[r] ??= { budget: 0, total: 0, cost: 0 });
+      s.budget += d.byRunner?.[r] || 0;
+      s.total += d.runners?.[r]?.total || 0;
+      s.cost += d.runners?.[r]?.costUsd || 0;
+    }
+  }
+  const c = w.runner.claude;
+  const ag = w.runner.antigravity;
+  w.agEstUsd = ag && c?.budget && c.cost ? ag.budget * (c.cost / c.budget) : null;
+  return w;
+}
+
+/** 'headroom savings --json' 캐시 → 오늘·7일 절약. 서버 응답이 {at, data} 로 감싸도, 날것이어도 읽는다. 모르면 null. */
+export function headroomView(h) {
+  const w = h?.windows || h?.data?.windows;
+  if (!w) return null;
+  const pick = (x) => (x ? { saved: x.tokens_saved || 0, before: x.tokens_before || 0, pct: x.savings_percent ?? null, usd: x.cost_usd ?? null, calls: x.calls || 0 } : null);
+  return { at: h.at || null, today: pick(w.today), week: pick(w.last_7_days) };
+}

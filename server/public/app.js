@@ -1,6 +1,6 @@
 // AI Squad 보드 화면. 프레임워크 없이 상태 하나를 받아 전부 다시 그린다.
 import { SIZE, character, drawCharacter } from './pixel.js';
-import { STATUS_FALLBACK, askItems, blockedAction, budgetLevel, canApprove, confirmItems, inputKey, inputPayload, limitChip, looksLikeDiff, orderOutcome, panelDecision, renderDiff, resetText, todoCounts, topMembers, viewStatus, weekSlots } from './logic.js';
+import { STATUS_FALLBACK, askItems, blockedAction, budgetLevel, canApprove, confirmItems, inputKey, inputPayload, limitChip, looksLikeDiff, orderOutcome, panelDecision, renderDiff, resetText, todoCounts, topMembers, usageReport, headroomView, viewStatus, weekSlots, weekTotals } from './logic.js';
 const $ = (s) => document.querySelector(s);
 const KIND = { order: '지시', handoff: '인계', question: '질문', answer: '답변', report: '완료 보고', note: '메모' };
 const TASK_COLS = [['todo', '할 일'], ['doing', '진행 중'], ['review', '검수'], ['blocked', '막힘'], ['done', '완료']];
@@ -96,8 +96,11 @@ function eventLabel(e) {
   if (e.type === 'tool') return [e.tool, e.path].filter(Boolean).join(' · ');
   if (e.type === 'start') return `작업 시작${e.text ? ' · ' + e.text : ''}`;
   if (e.type === 'end') return `작업 끝${e.text ? ' · ' + e.text : ''}`;
+  if (e.type === 'outside-warn') return `경로 밖 변경 · ${outsideFiles(e)}`;
   return e.text || '';
 }
+// git 에만 보인 맡은 경로 밖 변경 — member 가 '' 면 누가 고쳤는지 모름
+const outsideFiles = (e) => (e.files || []).map((f) => `${f.path} (${f.member ? nameOf(f.member) + ' 몫' : '누가 고쳤는지 모름'})`).join(', ') || e.text || '';
 const ICON_LOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
 const ICON_CHEV = '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
 const ICON_ARROW = '<svg class="arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
@@ -153,11 +156,18 @@ async function load() {
 }
 
 let source = null;
+let bootVersion = null; // 처음 받은 서버 version(커밋 해시) — 재시작 뒤 다르면 새로고침
 function connect() {
   source?.close();
   source = new EventSource(`/api/stream?project=${encodeURIComponent(ui.project)}`);
   const live = $('#live');
-  source.addEventListener('hello', () => {
+  source.addEventListener('hello', (e) => {
+    let v = null;
+    try {
+      v = JSON.parse(e.data).version ?? null;
+    } catch {}
+    if (v && bootVersion && v !== bootVersion) return location.reload();
+    bootVersion ??= v;
     live.classList.add('is-on');
     live.lastElementChild.textContent = '실시간';
     live.title = '실시간 연결됨';
@@ -167,6 +177,8 @@ function connect() {
     live.classList.remove('is-on');
     live.lastElementChild.textContent = '다시 연결 중';
     live.title = '다시 연결 중';
+    // 503 처럼 200 이 아닌 응답이면 EventSource 가 스스로 다시 붙지 않는다
+    if (source.readyState === EventSource.CLOSED) setTimeout(connect, 3000);
   };
 }
 
@@ -182,6 +194,7 @@ function render() {
     ['is-blocked', '막힘', d.counts.blocked, '막힌 멤버·작업 수'],
   ].map(([c, l, n, t]) => `<span class="stat ${c}" title="${t}">${l} <b>${n}</b></span>`).join('');
   renderUsage();
+  if (ui.tab === 'usage') renderUsageTab(), loadHeadroom();
   applyFx();
   fillSelects();
   renderInbox();
@@ -238,7 +251,8 @@ function renderCards() {
 /** 카드의 토큰: 하루 상한이 있으면 오늘 사용률 막대, 없으면 이번 작업 토큰 */
 function memberUse(m) {
   const t = m.tokens || {};
-  const tip = `이번 작업 ${fmtTok(t.task)} · 오늘 ${fmtTok(t.today)} · 누적 ${fmtTok(t.all)}토큰${m.budgetLimit ? ` · 하루 상한 ${fmtTok(m.budgetLimit)}` : ''}`;
+  const s = m.runStats;
+  const tip = `이번 작업 ${fmtTok(t.task)} · 오늘 ${fmtTok(t.today)} · 누적 ${fmtTok(t.all)}토큰${m.budgetLimit ? ` · 하루 상한 ${fmtTok(m.budgetLimit)}` : ''}${s?.runs ? `\n실행 ${s.runs}번 · 실행당 기본 맥락 ${fmtShort(s.avgBase)} · 작업당 ${fmtShort(s.perTask)}토큰` : ''}`;
   if (!m.budgetLimit) return `<span class="tok" title="${esc(tip)}">이번 작업 ${fmtShort(t.task)}토큰</span>`;
   const r = (t.today || 0) / m.budgetLimit;
   return `<span class="tok use lv-${budgetLevel(r, ui.data.budget?.warn)}" title="${esc(tip)}">오늘 ${Math.round(r * 100)}%<span class="bar"><i style="width:${Math.min(100, r * 100).toFixed(1)}%"></i></span></span>`;
@@ -258,7 +272,7 @@ const flags = (m) =>
 function eventList(events, n) {
   const list = events.slice(-n).reverse();
   if (!list.length) return '<p class="empty">이벤트 없음</p>';
-  return `<ul class="mini-list">${list.map((e) => `<li><span class="grow" title="${esc(eventLabel(e))}">${esc(eventLabel(e))}</span><time title="${esc(fullTime(e.at))}">${rel(e.at)}</time></li>`).join('')}</ul>`;
+  return `<ul class="mini-list">${list.map((e) => `<li${e.type === 'outside-warn' ? ' class="is-warn"' : ''}><span class="grow" title="${esc(eventLabel(e))}">${esc(eventLabel(e))}</span><time title="${esc(fullTime(e.at))}">${rel(e.at)}</time></li>`).join('')}</ul>`;
 }
 function taskList(tasks) {
   if (!tasks.length) return '<p class="empty">없음</p>';
@@ -322,6 +336,7 @@ function renderKanban() {
         ${t.status === 'review' ? `<div class="tcard-review">검수: ${esc(nameOf(t.reviewer || ''))}${t.diffStat?.length ? ` · 파일 ${t.diffStat.length}개` : ''}</div>` : ''}
         ${t.reviewNote && t.status === 'todo' ? `<div class="tcard-review is-reject" title="${esc(t.reviewNote)}">검수 반려: ${esc(t.reviewNote)}</div>` : ''}
         ${t.blockedReason ? `<div class="tcard-review is-reject">${esc(t.blockedReason)}</div>` : ''}
+        ${((w) => w ? `<div class="tcard-review is-warn" title="${esc(eventLabel(w))}">경로 밖 변경 ${w.files?.length || ''}개 · ${esc(outsideFiles(w))}</div>` : '')(d.events.findLast((e) => e.type === 'outside-warn' && e.taskId === t.id))}
         ${thumbs(t.attachments)}
         ${t.summary || t.detail ? `<div class="tcard-sum" title="${esc(t.summary || t.detail)}">${esc(t.summary || t.detail)}</div>` : ''}
         ${t.usage ? `<div class="tok" title="이 작업에 쓴 토큰">${fmtTok(usageTotal(t.usage))}토큰</div>` : ''}
@@ -448,6 +463,8 @@ function renderModal() {
   const caps = [...d.messages.filter((x) => x.from === m.id).flatMap((x) => x.attachments || []), ...d.tasks.filter((t) => t.member === m.id).flatMap((t) => t.attachments || [])]
     .filter((x, i, all) => x.type === 'capture' && all.findIndex((y) => y.name === x.name) === i)
     .sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  const use = usageReport(d, d.week?.start ?? Date.now() - 7 * 864e5).members.find((x) => x.id === m.id);
+  const useStat = (l, v, t) => `<span class="stat" title="${t}">${l} <b>${v}</b></span>`;
   const html = `
     <div class="modal-grid">
       <div>
@@ -457,6 +474,12 @@ function renderModal() {
         <section><h3>인계 메모</h3><p class="handoff">${esc(m.handoff || '없음')}</p></section>
       </div>
       <div>
+        <section><h3>이번 주 사용</h3>${use ? `<div class="stats">
+          ${useStat('작업', use.tasks, '이번 주 끝낸 실행이 있는 작업 수')}
+          ${useStat('평균 기본 맥락', use.avgBase === null ? '-' : fmtShort(use.avgBase), '첫 응답이 읽은 입력 — 시스템 프롬프트·문서·도구 설명. 크면 MEMBER.md·CLAUDE.md·켜진 기술을 줄일 것')}
+          ${m.runStats?.runs ? useStat('누적 실행', m.runStats.runs, `최근 기록 전체(서버 집계) · 실행당 기본 맥락 ${fmtShort(m.runStats.avgBase)} · 작업당 ${fmtShort(m.runStats.perTask)}토큰`) : ''}
+          ${useStat('작업당 토큰',use.perTask === null ? '-' : fmtShort(use.perTask), '이번 주 토큰 ÷ 작업 수')}
+          ${useStat('비용', usd(use.cost), '이번 주 실행 비용(기록된 것만)')}</div>` : '<p class="empty">이번 주 기록 없음</p>'}</section>
         <section><h3>최근 이벤트</h3>${eventList(d.events.filter((e) => e.member === m.id), 15)}</section>
         <section><h3>담당 경로</h3>${pathList(m.owns)}</section>
         <section><h3>켜진 기술 ${techCount(m)}</h3>${techBlock(m)}</section>
@@ -911,6 +934,66 @@ function renderUsage() {
     <p class="muted small">${USE_NOTE}</p>
     <a class="btn btn-sm" href="#report">이번 주 사용 보기</a>`;
   renderWeek();
+}
+// ── 사용량 탭: Claude·Antigravity·Headroom 비교. 이번 주 숫자는 logic.js usageReport, Headroom 은 서버 캐시 ──
+const usd = (n) => (n === null || n === undefined ? '-' : `$${n < 100 ? n.toFixed(2) : Math.round(n).toLocaleString('ko-KR')}`);
+/** 서버 runStats(최근 기록 전체) → 표 칸: 실행 수, 툴팁에 실행당 기본 맥락·작업당 토큰 */
+const runCell = (s) => (s?.runs ? `<span title="실행당 기본 맥락 ${fmtShort(s.avgBase)} · 작업당 ${fmtShort(s.perTask)}토큰">${s.runs}</span>` : '-');
+const runnerDot = (r) =>`<i class="dot-r r-${esc(r)}"></i>${esc(RUNNER_NAME[r] || r)}`;
+let headroomAt = 0;
+async function loadHeadroom() {
+  if (Date.now() - headroomAt < 60e3) return; // 서버는 5분마다 모은다
+  headroomAt = Date.now();
+  try {
+    ui.headroom = headroomView(await api('/api/usage/headroom'));
+  } catch {
+    ui.headroom = null; // 서버에 아직 없음 → '수집 전'
+  }
+  if (ui.tab === 'usage') renderUsageTab();
+}
+function renderUsageTab() {
+  const d = ui.data;
+  if (!d) return;
+  const r = usageReport(d, d.week?.start ?? Date.now() - 7 * 864e5);
+  const tt = d.tokensToday || { total: 0 };
+  const hr = ui.headroom;
+  const wk = weekTotals(d.week); // 이번 주 합·runner 별은 서버 week.days(전체 기록) 집계
+  const kpi = (k, v, sub, title = '') => `<div class="kpi" title="${esc(title)}"><span class="kpi-k">${k}</span><b>${v}</b><span class="kpi-sub">${sub}</span></div>`;
+  const hrKpi = (label, w) => w
+    ? kpi(`Headroom ${label} 절약`, fmtShort(w.saved), `${w.pct ?? '-'}% · ${usd(w.usd)} · 호출 ${fmtTok(w.calls)}`, `압축 전 ${fmtTok(w.before)}토큰 중 ${fmtTok(w.saved)}토큰 절약${hr.at ? `\n측정 ${fullTime(hr.at)}` : ''}`)
+    : kpi(`Headroom ${label} 절약`, '-', hr === undefined ? '불러오는 중' : '수집 전', 'headroom savings 를 서버가 아직 모으지 않았습니다');
+  const limKpi = (k, label) => {
+    const c = limitChip(d.limits?.[k]);
+    return kpi(`Claude ${label} 한도`, c ? `${c.pct}%` : '-', c ? `남음 ${c.left}%${c.reset ? ` · ${c.reset} 리셋` : ''}` : '측정 없음', USE_NOTE);
+  };
+  $('#use-kpis').innerHTML = [
+    kpi('오늘 총 토큰', fmtShort(tt.total), `예산 기준 ${fmtShort(tt.budgetTokens || 0)} · ${usd(tt.costUsd)}`, `${fmtTok(tt.total)}토큰\n${USE_NOTE}`),
+    kpi('이번 주 예산 기준 토큰', fmtShort(wk.budget), `총 ${fmtShort(wk.total)} · ${usd(wk.cost)}`, `예산 기준 ${fmtTok(wk.budget)} · 총 ${fmtTok(wk.total)}토큰\n${USE_NOTE}`),
+    hrKpi('오늘', hr?.today),
+    hrKpi('7일', hr?.week),
+    limKpi('fiveHour', '5시간'),
+    limKpi('sevenDay', '주간'),
+  ].join('');
+
+  // 아낀 양: Headroom 실측 + Antigravity 로 넘긴 몫을 Claude 단가로 환산(추정)
+  const ag = wk.runner.antigravity;
+  const shares = Object.entries(wk.runner).filter(([, s]) => s.budget);
+  $('#use-save').innerHTML = `<h3 class="use-h">아낀 양 <span class="muted">이번 주</span></h3>
+    <dl class="save-list">
+      <dt>Headroom 압축</dt><dd><b>${hr?.week ? `${fmtShort(hr.week.saved)}토큰` : '수집 전'}</b>${hr?.week ? `<span class="muted">${hr.week.pct ?? '-'}% · ${usd(hr.week.usd)}</span>` : ''}</dd>
+      <dt>Antigravity 로 넘긴 작업 <em class="est">추정</em></dt><dd><b>${ag ? `약 ${usd(wk.agEstUsd)}` : '없음'}</b>${ag ? `<span class="muted">${fmtShort(ag.total)}토큰 · Claude 로 돌렸다면</span>` : ''}</dd>
+    </dl>
+    ${shares.length ? `<div class="share" title="이번 주 예산 기준 토큰 비율">${shares.map(([k, s]) => `<i class="r-${esc(k)}" style="flex:${s.budget}"></i>`).join('')}</div>
+    <ul class="wk-legend">${shares.map(([k, s]) => `<li>${runnerDot(k)} ${Math.round((s.budget / wk.budget) * 100)}%</li>`).join('')}</ul>` : ''}
+    <p class="muted small">추정값은 Antigravity 토큰을 이번 주 Claude 실제 단가(비용 ÷ 예산 기준 토큰)로 바꾼 것 — 청구액이 아닙니다.</p>`;
+
+  $('#use-members').innerHTML = `<h3 class="use-h">멤버별 <span class="muted">이번 주${r.truncated ? ' · 최근 기록 기준' : ''}</span></h3>
+    ${r.members.length ? `<table class="use-table"><thead><tr><th>멤버</th><th class="num">작업</th><th class="num" title="첫 응답이 읽은 입력 — 시스템 프롬프트·문서·도구 설명">평균 기본 맥락</th><th class="num">작업당 토큰</th><th class="num" title="최근 기록 전체의 실행 수 · 실행당 기본 맥락 · 작업당 토큰(서버 집계)">누적 실행</th><th>주로 쓴 runner</th><th>모델</th><th class="num">비용</th></tr></thead>
+    <tbody>${r.members.map((m) => `<tr><td>${esc(nameOf(m.id))}</td><td class="num">${m.tasks}</td><td class="num">${m.avgBase === null ? '-' : fmtShort(m.avgBase)}</td><td class="num">${m.perTask === null ? '-' : fmtShort(m.perTask)}</td><td class="num">${runCell(member(m.id)?.runStats)}</td><td>${runnerDot(m.runner)}</td><td class="mono">${esc(m.model || '기본값')}</td><td class="num">${usd(m.cost)}</td></tr>`).join('')}</tbody></table>` : '<p class="empty">이번 주 기록 없음</p>'}`;
+
+  $('#use-top').innerHTML = `<h3 class="use-h">비싼 작업 상위 10 <span class="muted">이번 주</span></h3>
+    ${r.top.length ? `<table class="use-table"><thead><tr><th>작업</th><th>멤버</th><th>runner</th><th class="num">토큰</th><th class="num">비용</th></tr></thead>
+    <tbody>${r.top.map((t) => `<tr><td class="clip" title="${esc(`${t.title}\n${t.id}`)}">${esc(t.title)}</td><td>${esc(nameOf(t.member))}</td><td>${runnerDot(t.runner)}</td><td class="num" title="예산 기준 ${fmtTok(t.budget)}">${fmtShort(t.total)}</td><td class="num">${usd(t.cost)}</td></tr>`).join('')}</tbody></table>` : '<p class="empty">이번 주 기록 없음</p>'}`;
 }
 function renderWeek() {
   const d = ui.data;
@@ -1410,7 +1493,7 @@ function setView(v) {
 const netVisible = () => ui.tab === 'squad' && ui.view === 'network';
 
 // 상단 탭: 주소의 #squad / #tasks / #chat 으로 남긴다
-const TABS = ['squad', 'tasks', 'chat', 'report'];
+const TABS = ['squad', 'tasks', 'chat', 'report', 'usage'];
 function setTab() {
   const t = location.hash.slice(1);
   ui.tab = TABS.includes(t) ? t : 'squad';
@@ -1424,6 +1507,7 @@ function setTab() {
     box.scrollTop = box.scrollHeight;
   }
   if (ui.tab === 'report') loadReports();
+  if (ui.tab === 'usage') renderUsageTab(), loadHeadroom();
 }
 window.addEventListener('hashchange', setTab);
 
