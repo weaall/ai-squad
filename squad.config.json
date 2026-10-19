@@ -24,10 +24,11 @@
     "idleMinutes": 30
   },
   "budget": {
-    "daily": 6000000,
-    "memberDaily": 1500000,
-    "task": 600000,
-    "warn": 0.8
+    "daily": 0,
+    "memberDaily": 0,
+    "task": 0,
+    "warn": 0.8,
+    "_note": "0 = 상한 없음. 토큰은 막지 않고 보이게만 한다(2026-10-19 사용자: 한계가 아니라 아끼면서 간다, 한도에 걸리면 계정 전환)"
   },
   "review": {
     "default": "",
