@@ -33,6 +33,8 @@ import {
   checkPlugin, expandPath, isPortable, isTrusted, mergedProjects, migrate, migrateFiles, readInstalled, resolveProject, setupPlan, toolList,
 } from './setup.mjs';
 import { hasCommand } from '../lib/runners/proc.mjs';
+import { modelFor } from '../lib/runners/claude.mjs';
+import { bigClaudeMds, refreshMap } from '../lib/runners/map.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const now = () => new Date().toISOString();
@@ -42,7 +44,9 @@ const HELP = `AI Squad CLI
   init <project> <path> [--name 이름] [--squad-dir squads/<project>] [--local]
                                            .squad 뼈대와 projects.json 항목 만들기. path 는 상대 경로·%USERPROFILE% 그대로 저장
                                            --local: 이 PC 전용 projects.local.json(git 제외)에 경로만 덮어쓰기
-  doctor [project]                         이 PC 점검: claude 로그인·headroom·멤버 플러그인 설치·경로·작업 공간 신뢰 (설치는 안 함)
+  doctor [project] [--propose]             이 PC 점검: claude 로그인·headroom·멤버 플러그인 설치·경로·작업 공간 신뢰 (설치는 안 함)
+                                           30KB 넘는 저장소 CLAUDE.md 경고, --propose: 그 저장소 담당에게 줄이기 작업 제안
+  map <project> [--force]                  파일 지도 data/<project>/map.md 갱신 (커밋이 바뀌었을 때만, 쉬운 모델)
   setup [--yes] [--json]                   빠진 도구(squad.config.json tools, 기본 claude·gemini·headroom)·멤버 플러그인을 확인 후 설치. 로그 logs/setup-*.log
                                            --json 만 주면 설치할 목록만 출력. 로그인은 하지 않고 안내만
   migrate <project> [--to squads/<project>] [--yes]   스쿼드 문서를 이 저장소로 복사하고 squadDir 지정 (--yes 없으면 미리보기)
@@ -263,7 +267,7 @@ const commands = {
     }
   },
 
-  async doctor([projectId]) {
+  async doctor([projectId], o) {
     const projects = mergedProjects(ROOT);
     const ids = projectId ? [projectId] : Object.keys(projects);
     if (projectId && !projects[projectId]) fail(`등록되지 않은 프로젝트: ${projectId}`);
@@ -294,6 +298,16 @@ const commands = {
         const c = checkPlugin(p, installed);
         add(`${id} 플러그인 ${p} (${who.join(',')})`, c.state === 'ok' ? true : c.state === 'missing' ? false : null, c.hint);
       }
+      // 큰 CLAUDE.md 는 멤버 실행마다 다시 읽힌다 — 고치지 않고 담당에게 줄이기를 제안만 한다
+      for (const b of bigClaudeMds(dir, members)) {
+        const title = `CLAUDE.md 줄이기 — ${path.relative(dir, b.file) || 'CLAUDE.md'} ${Math.round(b.size / 1024)}KB`;
+        const detail = `멤버가 실행마다 이 파일을 읽는다(약 ${Math.round(b.size / 4).toLocaleString('ko-KR')}토큰). 핵심 규칙만 남기고 상세는 docs/ 로 나눠 링크한다. 30KB 이하로.`;
+        if (o.propose && b.owner) {
+          const p = ctx(id);
+          if (!readJsonl(p.paths.tasks).some((t) => t.title === title && !['done', 'cancelled'].includes(t.status))) addTask(p.paths, p.members, { member: b.owner, title, detail }, 'order');
+        }
+        add(`${id} ${title}`, null, b.owner ? `node bin/squad.mjs doctor ${id} --propose  (${b.owner} 에게 작업 제안)` : '핵심 규칙만 남기고 상세는 docs/ 로');
+      }
     }
     add('headroom (claude 실행을 항상 감쌈)', hasCommand('headroom'), hasCommand('headroom') ? '' : 'pip install headroom-ai  (없으면 경고 후 claude 로 바로 실행)');
     // Antigravity 는 선택 — 쓰는 멤버가 없으면 없어도 ? 로만 보인다
@@ -302,6 +316,16 @@ const commands = {
     console.log(table([['상태', '점검', '해결'], ...rows]));
     console.log('\n설치는 하지 않았습니다. 없음 은 위 해결 명령이나 node bin/squad.mjs setup 으로, ? 는 이 PC 에서 확인할 수 없는 것(내장 스킬·커넥터)입니다.');
     if (rows.some((r) => r[0] === '없음')) process.exitCode = 1;
+  },
+
+  async map([projectId], o) {
+    const { paths, members } = ctx(projectId);
+    const config = loadConfig(ROOT);
+    const runner = getRunner(config, 'claude');
+    // plan 모드: 도구 없이 답만 — 파일을 열거나 고치지 않는다
+    const exec = (prompt) => runner.exec({ prompt, cwd: paths.path, mode: 'plan', model: modelFor({ difficulty: 'easy', models: config.models }), timeoutMs: 180000 });
+    const r = await refreshMap({ root: ROOT, projectId, projectPath: paths.path, members: members.filter((m) => m.id !== 'order'), exec, force: o.force });
+    console.log(r.fresh ? `갱신: ${r.file} (${r.members.join(', ') || '구역 없음'})` : `그대로: ${r.file} (커밋이 같음)`);
   },
 
   async setup(_, o) {
@@ -788,6 +812,7 @@ const { values, positionals } = parseArgs({
     cmd: { type: 'string', multiple: true }, risk: { type: 'string' }, rollback: { type: 'string' },
     text: { type: 'string' }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' }, 'body-file': { type: 'string' },
     option: { type: 'string', multiple: true }, 'squad-dir': { type: 'string' }, local: { type: 'boolean' }, yes: { type: 'boolean' }, json: { type: 'boolean' }, runner: { type: 'string' }, difficulty: { type: 'string' }, field: { type: 'string', multiple: true },
+    propose: { type: 'boolean' }, force: { type: 'boolean' },
   },
 });
 const [cmd = 'help', ...rest] = positionals;
