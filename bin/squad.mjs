@@ -459,7 +459,7 @@ const commands = {
 
   async 'run-queue'([projectId], o) {
     const { paths, members } = ctx(projectId);
-    const max = Number(o.max || 2);
+    const max = Number(o.max || loadConfig(ROOT).queue?.max || 2);
     if (!Number.isInteger(max) || max < 1 || max > 8) fail('--max 는 1~8');
     console.log(`대기열 실행 — 동시에 ${max}개까지`);
     const r = await runQueue({
