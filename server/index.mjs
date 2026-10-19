@@ -14,6 +14,7 @@ import { validateMessage, validateOrder, validatePlan, validateTask, validateTas
 import { budgetGate, planOrder, saveOrder } from '../lib/runner.mjs';
 import { addInbox, loadInbox } from '../lib/inbox.mjs';
 import { buildReport, dateKey, isDateKey } from '../lib/report.mjs';
+import { limitsView, loadLimits } from '../lib/limits.mjs';
 import { CAPTURE_RE } from '../lib/capture.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { LOGIN_COMMAND, runnerStatuses } from '../lib/runners/index.mjs';
@@ -167,6 +168,7 @@ export function startBoard({
     return buildState({
       project: p, members: loadMembers(p), tasks: readJsonl(p.tasks), messages: readJsonl(p.messages), events: readJsonl(p.events),
       approvals: loadApprovals(p), stale: config.stale, budget: config.budget, inbox: loadInbox(p), demo,
+      limits: limitsView(loadLimits(root)),
     });
   }
 
