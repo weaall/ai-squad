@@ -25,7 +25,9 @@ import { setSecret, secretsFile } from '../lib/secrets.mjs';
 import { ACTIONS, DECISIONS, decideApproval, decisionText, loadApprovals, requestApproval, validateApprovalRequest } from '../lib/approvals.mjs';
 import { INPUT_KINDS, requestInput, validateInputRequest } from '../lib/input.mjs';
 import { askRequest } from './ask.mjs';
-import { checkPlugin, expandPath, isPortable, isTrusted, mergedProjects, migrate, migrateFiles, readInstalled, resolveProject } from './setup.mjs';
+import {
+  checkPlugin, expandPath, isPortable, isTrusted, mergedProjects, migrate, migrateFiles, readInstalled, resolveProject, setupPlan, toolList,
+} from './setup.mjs';
 import { hasCommand } from '../lib/runners/proc.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -37,6 +39,8 @@ const HELP = `AI Squad CLI
                                            .squad 뼈대와 projects.json 항목 만들기. path 는 상대 경로·%USERPROFILE% 그대로 저장
                                            --local: 이 PC 전용 projects.local.json(git 제외)에 경로만 덮어쓰기
   doctor [project]                         이 PC 점검: claude 로그인·headroom·멤버 플러그인 설치·경로·작업 공간 신뢰 (설치는 안 함)
+  setup [--yes] [--json]                   빠진 도구(squad.config.json tools, 기본 claude·gemini·headroom)·멤버 플러그인을 확인 후 설치. 로그 logs/setup-*.log
+                                           --json 만 주면 설치할 목록만 출력. 로그인은 하지 않고 안내만
   migrate <project> [--to squads/<project>] [--yes]   스쿼드 문서를 이 저장소로 복사하고 squadDir 지정 (--yes 없으면 미리보기)
   status [project]                         멤버별 상태 표
   order <project> "<지시>" [--dry] [--auto] [--headroom]
@@ -280,8 +284,40 @@ const commands = {
     }
     if (needHeadroom.size) add(`headroom (${[...needHeadroom].slice(0, 3).join(',')}${needHeadroom.size > 3 ? ' 외' : ''})`, hasCommand('headroom'), hasCommand('headroom') ? '' : 'pip install headroom-ai  (또는 MEMBER.md 의 headroom 끄기)');
     console.log(table([['상태', '점검', '해결'], ...rows]));
-    console.log('\n설치는 하지 않았습니다. 없음 은 위 해결 명령으로, ? 는 이 PC 에서 확인할 수 없는 것(내장 스킬·커넥터)입니다.');
+    console.log('\n설치는 하지 않았습니다. 없음 은 위 해결 명령이나 node bin/squad.mjs setup 으로, ? 는 이 PC 에서 확인할 수 없는 것(내장 스킬·커넥터)입니다.');
     if (rows.some((r) => r[0] === '없음')) process.exitCode = 1;
+  },
+
+  async setup(_, o) {
+    const plugins = [];
+    for (const p of Object.values(mergedProjects(ROOT))) {
+      const { path: dir, squad } = resolveProject(ROOT, p);
+      if (fs.existsSync(dir)) for (const m of loadMembers({ members: path.join(squad, 'members') })) plugins.push(...m.plugins);
+    }
+    const check = (c) => spawnSync(c, { shell: true, stdio: 'ignore', timeout: 30_000 }).status === 0;
+    const steps = setupPlan({ tools: toolList(ROOT), plugins, installed: readInstalled(), check });
+    if (o.json && !o.yes) return console.log(JSON.stringify({ missing: steps }));
+    if (!steps.length) return console.log('빠진 도구가 없습니다');
+    console.log(`설치할 것 ${steps.length}개:\n${steps.map((s) => `  ${s.name}: ${s.cmd}`).join('\n')}`);
+    if (!o.yes && !(await ask('위 명령을 순서대로 실행할까요? (y/N) '))) return console.log('설치하지 않았습니다');
+    fs.mkdirSync(path.join(ROOT, 'logs'), { recursive: true });
+    const log = path.join(ROOT, 'logs', `setup-${now().replace(/[:.]/g, '-')}.log`);
+    const results = [];
+    for (const s of steps) {
+      const r = spawnSync(s.cmd, { shell: true, encoding: 'utf8', timeout: 600_000 });
+      const ok = r.status === 0;
+      fs.appendFileSync(log, `$ ${s.cmd}\nexit ${r.status ?? r.error?.message}\n${r.stdout || ''}${r.stderr || ''}\n`, 'utf8');
+      results.push({ ...s, ok });
+      if (!o.json) console.log(`${ok ? 'OK  ' : '실패'} ${s.name}`);
+    }
+    const logins = results.filter((s) => s.ok && s.login);
+    if (o.json) console.log(JSON.stringify({ results, log }));
+    else {
+      console.log(`로그: ${log}`);
+      // 로그인은 자동으로 하지 않는다. API 키는 squad auth set 으로만.
+      for (const s of logins) console.log(`로그인 필요: 새 콘솔에서 ${s.login} 실행  (Windows: start "" cmd /k ${s.login})`);
+    }
+    if (results.some((s) => !s.ok)) process.exitCode = 1;
   },
 
   migrate([projectId], o) {
@@ -680,7 +716,7 @@ const { values, positionals } = parseArgs({
     'details-file': { type: 'string' }, details: { type: 'string' }, 'diff-file': { type: 'string' }, files: { type: 'string' },
     cmd: { type: 'string', multiple: true }, risk: { type: 'string' }, rollback: { type: 'string' },
     text: { type: 'string' }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' }, 'body-file': { type: 'string' },
-    option: { type: 'string', multiple: true }, 'squad-dir': { type: 'string' }, local: { type: 'boolean' }, yes: { type: 'boolean' }, field: { type: 'string', multiple: true },
+    option: { type: 'string', multiple: true }, 'squad-dir': { type: 'string' }, local: { type: 'boolean' }, yes: { type: 'boolean' }, json: { type: 'boolean' }, field: { type: 'string', multiple: true },
   },
 });
 const [cmd = 'help', ...rest] = positionals;

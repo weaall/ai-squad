@@ -1,5 +1,5 @@
 // 다른 컴퓨터에서 같은 스쿼드를 열기 위한 도구 — 경로 풀기, projects.local.json 덮어쓰기, doctor 점검, migrate.
-// 설치·삭제는 하지 않는다. ~/.claude 는 읽기만 한다.
+// 설치는 squad setup 이 사람 확인 뒤에만 한다. 삭제는 하지 않는다. ~/.claude 는 읽기만 한다.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -91,6 +91,44 @@ export function isTrusted(dir, home = os.homedir()) {
   const projects = readJson(path.join(home, '.claude.json')).projects || {};
   const k = Object.keys(projects).find((x) => winKey(x) === winKey(dir));
   return Boolean(k && projects[k].hasTrustDialogAccepted);
+}
+
+// ── setup: 빠진 도구 설치 ──
+
+/** 기본 도구 목록. squad.config.json 의 tools 가 있으면 그것을 쓴다. 버전은 정확히 고정한다. login 은 설치 뒤 사람이 직접 열 명령. */
+export const DEFAULT_TOOLS = [
+  { name: 'claude', check: 'claude --version', install: 'npm i -g @anthropic-ai/claude-code@2.1.286', login: 'claude' },
+  { name: 'gemini', check: 'gemini --version', install: 'npm i -g @google/gemini-cli@0.64.0', login: 'gemini' },
+  { name: 'headroom', check: 'headroom --version', install: 'pip install headroom-ai==0.39.1' },
+];
+
+/** squad.config.json 의 tools(잘못된 항목은 뺀다). 없거나 비면 DEFAULT_TOOLS. */
+export function toolList(root) {
+  const raw = readJson(path.join(root, 'squad.config.json')).tools;
+  const str = (v) => typeof v === 'string' && v.trim();
+  const tools = Array.isArray(raw)
+    ? raw.filter((t) => t && /^[a-z0-9][a-z0-9-]{0,39}$/.test(t.name) && str(t.check) && str(t.install) && (t.login === undefined || str(t.login)))
+    : [];
+  return tools.length ? tools : DEFAULT_TOOLS;
+}
+
+/** `플러그인:스킬` 이 missing 일 때 이 PC 에 설치할 명령. */
+export const pluginInstallCmd = (name) => `claude plugin install ${name.split(':')[0]}`;
+
+/**
+ * 설치할 것 목록. check(cmd) → 있으면 true. plugins 는 MEMBER.md 에서 켜진 이름들.
+ * 반환: [{ kind: 'tool'|'plugin', name, cmd, login? }]
+ */
+export function setupPlan({ tools, plugins = [], installed, check }) {
+  const steps = tools.filter((t) => !check(t.check)).map((t) => ({ kind: 'tool', name: t.name, cmd: t.install, ...(t.login ? { login: t.login } : {}) }));
+  const owners = new Set();
+  for (const p of plugins) {
+    const owner = p.split(':')[0];
+    if (p === 'headroom' || owners.has(owner) || checkPlugin(p, installed).state !== 'missing') continue;
+    owners.add(owner);
+    steps.push({ kind: 'plugin', name: owner, cmd: pluginInstallCmd(p) });
+  }
+  return steps;
 }
 
 // ── migrate ──

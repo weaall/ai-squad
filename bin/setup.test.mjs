@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { checkPlugin, expandPath, isPortable, isTrusted, mergedProjects, migrate, migrateFiles, readInstalled, resolveProject } from './setup.mjs';
+import {
+  checkPlugin, expandPath, isPortable, isTrusted, mergedProjects, migrate, migrateFiles, readInstalled, resolveProject, setupPlan, toolList, DEFAULT_TOOLS,
+} from './setup.mjs';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'squad-setup-'));
 const write = (f, s) => (fs.mkdirSync(path.dirname(f), { recursive: true }), fs.writeFileSync(f, s));
@@ -86,4 +88,19 @@ test('migrate: 문서·jsonl 복사(locks 제외), 원본 유지, squadDir 상�
   assert.equal(resolveProject(root, mergedProjects(root).qugo).squad, dst);
   assert.throws(() => migrate({ root, id: 'qugo', src, dst }), /이미 있습니다/);
   assert.throws(() => migrate({ root, id: 'qugo', src: path.join(proj, 'none'), dst: path.join(root, 'x') }), /스쿼드 문서가 없습니다/);
+});
+
+test('toolList·setupPlan: 설정 tools(잘못된 항목 제외) 또는 기본값, 빠진 도구·플러그인만 계획', () => {
+  const root = tmp();
+  assert.deepEqual(toolList(root), DEFAULT_TOOLS);
+  assert.ok(DEFAULT_TOOLS.every((t) => /[@=]\d+\.\d+\.\d+$/.test(t.install)), '버전 고정');
+  write(path.join(root, 'squad.config.json'), JSON.stringify({ tools: [{ name: 'x', check: 'x -v', install: 'npm i -g x@1.0.0', login: 'x' }, { name: 'Bad!', check: 'a', install: 'b' }] }));
+  const tools = toolList(root);
+  assert.deepEqual(tools.map((t) => t.name), ['x']);
+  const installed = { plugins: new Set(['caveman']), skills: new Set() };
+  const steps = setupPlan({ tools: [...tools, { name: 'y', check: 'y -v', install: 'i y' }], plugins: ['caveman:caveman', 'ponytail:ponytail', 'ponytail:audit', 'headroom', 'anthropic-skills:pdf'], installed, check: (c) => c === 'y -v' });
+  assert.deepEqual(steps, [
+    { kind: 'tool', name: 'x', cmd: 'npm i -g x@1.0.0', login: 'x' },
+    { kind: 'plugin', name: 'ponytail', cmd: 'claude plugin install ponytail' },
+  ]);
 });
