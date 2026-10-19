@@ -1,10 +1,18 @@
 {
   "qugo": {
     "name": "QUGO",
-    "path": "C:\\Users\\weaal\\qugo"
+    "path": "C:\\Users\\weaal\\qugo",
+    "runners": [
+      "claude",
+      "antigravity"
+    ]
   },
   "ai-squad": {
     "name": "AI Squad",
-    "path": "C:\\Users\\weaal\\ai-squad"
+    "path": "C:\\Users\\weaal\\ai-squad",
+    "runners": [
+      "claude",
+      "antigravity"
+    ]
   }
 }

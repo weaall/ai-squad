@@ -1,4 +1,6 @@
 ## 인계 메모
+- runner 라우팅: runMember 가 routeTask(작업 runner·model → paths.runners 에 antigravity 면 난이도·종류·5시간 사용률 → MEMBER.md) + routedRunner. projects.json runners 없으면 ['claude']. agy 실패·빈 답·도구 거부면 claude 1회 대체, events type 'fallback'.
+- usage.byRunner{today,week}·week.days[].byRunner(usage.runner 없으면 claude). 대체 전 agy 가 쓴 토큰은 이벤트에 안 남음(필요하면 fallback 이벤트에 usage 추가). ui 인계 M-mvev37zx-3d61.
 - 정적 파일: server/index.mjs TYPES 에 있는 확장자만 준다(html·js·css·svg·png·ico·webp). 토큰 검사는 /api/ 만 — /brand/* 는 공개. 새 확장자 필요하면 TYPES 에 추가.
 - 한도: lib/limits.mjs(readLimit·limitsView·limitHint·weekUsage), data/limits.json 전역 최신값, events type 'limit'. /api/state 에 limits·week. 걸리면 blockedReason '사용 한도', runQueue stoppedBy '사용 한도'. ui·runner 에 handoff 보냄.
 - 하루 경계는 KST 21:00(state.mjs usageDay/sameDay — 예산·오늘 사용·예산 승인 모두). 계획·작업 difficulty → runMember modelFor, config.models.
