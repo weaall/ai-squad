@@ -985,15 +985,15 @@ document.addEventListener('keydown', (e) => {
   for (const k of Object.keys(pops)) closePop(k);
 });
 
-// ── 데스크톱 Claude 세션 inbox ──
+// ── desktop 멤버(데스크톱 Claude 세션) inbox ──
 const INBOX = { pending: '대기', taking: '처리 중', done: '끝' };
 function renderInbox() {
   const list = (ui.data?.inbox || []).slice().reverse();
   const c = ui.data?.counts || {};
   $('#inbox-count').textContent = c.inboxTaking ? `${c.inbox || 0} · 처리 중 ${c.inboxTaking}` : String(c.inbox || 0);
   $('#inbox-chip').classList.toggle('is-wait', Boolean(c.inbox));
-  $('#inbox-pop').innerHTML = `<div class="pop-head"><b>데스크톱 Claude 세션</b><span class="muted">대기 ${c.inbox || 0} · 처리 중 ${c.inboxTaking || 0}</span></div>
-    ${list.length ? `<ul class="inbox-list">${list.map((i) => `<li class="ib-${esc(i.status)}"><div class="ib-top"><span class="tag">${INBOX[i.status]}</span><span class="mono">${esc(i.id)}</span><time title="${esc(fullTime(i.at))}">${rel(i.at)}</time></div><div class="ib-text">${esc(i.text)}</div>${i.result ? `<div class="ib-result">${esc(i.result)}</div>` : ''}</li>`).join('')}</ul>` : '<p class="empty">아직 보낸 지시가 없습니다</p>'}
+  $('#inbox-pop').innerHTML = `<div class="pop-head"><b>desktop 멤버</b><span class="muted">대기 ${c.inbox || 0} · 처리 중 ${c.inboxTaking || 0}</span></div>
+    ${list.length ? `<ul class="inbox-list">${list.map((i) => `<li class="ib-${esc(i.status)}"><div class="ib-top"><span class="tag">${INBOX[i.status]}</span><span class="mono">${esc(i.id)}</span><time title="${esc(fullTime(i.at))}">${rel(i.at)}</time></div><div class="ib-text">${esc(i.text)}</div>${i.result ? `<div class="ib-result">${esc(i.result)}</div>` : ''}</li>`).join('')}</ul>` : '<p class="empty">desktop 멤버에게 배정된 작업이 없습니다</p>'}
     <p class="muted small">데스크톱 세션에서 <code>squad inbox ${esc(ui.project)} --take</code> 로 가져가고 <code>squad inbox done &lt;id&gt; "결과"</code> 로 끝냅니다.</p>`;
 }
 
@@ -1353,7 +1353,7 @@ function setOrderBusy(busy, label) {
   order.busy = busy;
   $('#order-submit').disabled = busy;
   $('#order-text').disabled = busy;
-  $('#order-submit').textContent = busy ? label : $('#order-to').value === 'desktop' ? '보내기' : '계획 만들기';
+  $('#order-submit').textContent = busy ? label : '계획 만들기';
 }
 $('#order-form').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -1361,7 +1361,6 @@ $('#order-form').addEventListener('submit', (e) => {
   const err = $('#order-error');
   err.textContent = '';
   if (!text) return (err.textContent = '지시를 입력하세요');
-  if ($('#order-to').value === 'desktop') return sendDesktop(text);
   submitOrder(text);
 });
 async function submitOrder(text) {
@@ -1384,16 +1383,6 @@ async function submitOrder(text) {
     }
   } finally {
     setOrderBusy(false);
-  }
-}
-async function sendDesktop(text) {
-  try {
-    const r = await api('/api/inbox', { project: ui.project, text });
-    clearOrderText();
-    toast(`데스크톱 세션 inbox 에 넣었습니다 (${r.id})`);
-    load();
-  } catch (x) {
-    $('#order-error').textContent = x.message;
   }
 }
 // 지시 칸: 내용만큼 늘린다(최대 8줄은 CSS max-height, 넘치면 칸 안 스크롤)
@@ -1423,12 +1412,6 @@ function clearOrderText() {
   $('#order-text').value = '';
   fitOrderText();
 }
-$('#order-to').addEventListener('change', () => {
-  const desk = $('#order-to').value === 'desktop';
-  store('squad.orderTo', desk ? 'desktop' : 'main');
-  $('#order-submit').textContent = desk ? '보내기' : '계획 만들기';
-  $('#order-text').placeholder = desk ? '예: 결과지 A4 여백을 이 세션에서 바로 손봐 줘 (squad inbox --take 로 가져갑니다)' : '예: 메인 페이지 SEO 문구를 점검하고 검진기관 안내를 보강해 줘';
-});
 function cancelPlan() {
   order.plan = null;
   renderPlan();
@@ -1612,10 +1595,6 @@ $('#report-make').addEventListener('click', async (e) => {
 // ── 시작 ──
 (async () => {
   setSide(sideUi.open);
-  if (store('squad.orderTo') === 'desktop') {
-    $('#order-to').value = 'desktop';
-    $('#order-to').dispatchEvent(new Event('change'));
-  }
   setTab();
   setView(store('squad.view') === 'monitor' ? 'monitor' : 'network');
   try {

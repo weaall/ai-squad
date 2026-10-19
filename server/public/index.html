@@ -54,14 +54,10 @@
   <section class="cmdbar" aria-labelledby="order-label">
     <form id="order-form" class="cmd-form">
       <label id="order-label" for="order-text" class="cmd-label">지시</label>
-      <select id="order-to" class="select" aria-label="받는 사람">
-        <option value="main">메인 AI(자동)</option>
-        <option value="desktop">데스크톱 Claude 세션</option>
-      </select>
       <div class="cmd-grow"><textarea id="order-text" class="input" rows="1" maxlength="1000" autocomplete="off" aria-describedby="order-keys" placeholder="예: 메인 페이지 SEO 문구를 점검하고 검진기관 안내를 보강해 줘"></textarea></div>
       <span id="order-keys" hidden>Enter 보내기, Shift+Enter 줄바꿈, Tab 들여쓰기, Esc 로 지시 창에서 나가기</span>
       <button type="submit" class="btn btn-primary" id="order-submit">계획 만들기</button>
-      <button type="button" class="inbox-chip" id="inbox-chip" aria-haspopup="dialog" aria-expanded="false" aria-controls="inbox-pop" title="데스크톱 Claude 세션으로 보낸 지시">데스크톱 <b id="inbox-count">0</b></button>
+      <button type="button" class="inbox-chip" id="inbox-chip" aria-haspopup="dialog" aria-expanded="false" aria-controls="inbox-pop" title="desktop 멤버(데스크톱 Claude) 작업">데스크톱 <b id="inbox-count">0</b></button>
     </form>
     <p class="form-error" id="order-error" role="alert"></p>
     <div class="plan" id="order-plan" hidden aria-live="polite"></div>
