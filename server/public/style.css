@@ -762,13 +762,34 @@ pre.cmd { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--su
 /* ── 머리줄 토큰·한도 칩 (.seg 는 연결/모니터 전환 단추와 이름이 같아 칩 안에서 되돌린다) ── */
 .use-chip { display: inline-flex; align-items: center; gap: 2px; padding: 3px 4px; border-radius: 999px; border: 1px solid var(--line-soft); background: var(--surface); color: var(--muted); font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
 .use-chip:hover { border-color: var(--line); }
-.use-chip .seg { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border: 0; border-radius: 999px; background: transparent; }
-.use-chip .seg + .seg { border-left: 1px solid var(--line-soft); border-radius: 0; }
+.use-chip { padding: 4px 12px; gap: 5px; }
 .use-chip b { color: var(--text); font-variant-numeric: tabular-nums; }
-.use-chip .lv-warn b { color: var(--warn); }
-.use-chip .lv-over b { color: var(--blocked); }
-.use-chip .lv-stale b { color: var(--faint); }
-.use-chip.is-tight .more { display: none; }
+.use-chip.lv-warn b { color: var(--warn); }
+.use-chip.lv-over b { color: var(--blocked); }
+.use-chip.lv-stale b { color: var(--faint); }
+/* 사용량 상세 모달: 반원 게이지 2개 · 비율 막대(SVG) · Headroom · 멤버 상위 5 */
+.use-modal { width: min(720px, calc(100vw - 32px)); }
+.gauges { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.gauge { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.gauge svg { width: 180px; height: 102px; }
+.gauge path { fill: none; stroke: var(--surface-3); stroke-width: 12; stroke-linecap: round; }
+.gauge .g-val { stroke: var(--brand-cyan); }
+.gauge.lv-warn .g-val { stroke: var(--warn); }
+.gauge.lv-over .g-val { stroke: var(--blocked); }
+.gauge.lv-stale .g-val { stroke: var(--faint); }
+.gauge text { fill: var(--text); stroke: none; font-size: 22px; font-weight: 800; text-anchor: middle; font-variant-numeric: tabular-nums; }
+.gauge figcaption { display: flex; flex-direction: column; align-items: center; font-size: 12.5px; }
+.ratio-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
+.ratio-list li { display: grid; grid-template-columns: 96px minmax(0, 1fr) 56px 200px; align-items: center; gap: 10px; }
+.ratio-list b { text-align: right; font-variant-numeric: tabular-nums; }
+.ratio { width: 100%; height: 8px; border-radius: 4px; display: block; }
+.ratio rect { fill: var(--rc, var(--brand-green)); stroke: none; }
+.ratio .r-bg { fill: var(--surface-3); }
+.ratio .r-hr { fill: var(--brand-cyan); }
+.ratio-legend { display: flex; gap: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.use-modal .wk-top { width: auto; }
+.use-modal .wk-top .muted { min-width: 32px; text-align: right; font-variant-numeric: tabular-nums; }
+.use-modal .btn { align-self: flex-start; }
 .pop-sub { margin: 12px 0 6px; font-size: 12px; color: var(--muted); font-weight: 700; }
 .use-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
 .use-list li { display: flex; align-items: center; gap: 8px; }

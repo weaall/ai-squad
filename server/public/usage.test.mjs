@@ -68,7 +68,11 @@ test('usageReport: 이번 주 합·runner 별·멤버 표·비싼 작업·Antigr
 
 test('headroomView: 감싼 응답·날것 모두, 없으면 null', () => {
   const raw = { windows: { today: { tokens_saved: 5, tokens_before: 20, savings_percent: 25, cost_usd: 0.1, calls: 3 }, last_7_days: { tokens_saved: 50 } } };
-  assert.deepEqual(headroomView({ at: 1, data: raw }).today, { saved: 5, before: 20, pct: 25, usd: 0.1, calls: 3 });
+  assert.deepEqual(headroomView({ at: 1, data: raw }).today, { saved: 5, before: 20, pct: 25, newPct: null, usd: 0.1, calls: 3 });
   assert.equal(headroomView(raw).week.saved, 50);
+  // savings_percent 가 없으면 saved/before 로, new_input_savings_percent 는 그대로
+  const w = headroomView({ windows: { today: { tokens_saved: 1, tokens_before: 3, new_input_savings_percent: 42.5 } } }).today;
+  assert.equal(w.pct, 33.3);
+  assert.equal(w.newPct, 42.5);
   assert.equal(headroomView(null), null);
 });

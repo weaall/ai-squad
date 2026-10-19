@@ -896,45 +896,79 @@ document.addEventListener('change', async (e) => {
   }
 });
 
-// ── 토큰·한도: 머리줄 칩 하나(5시간·이번 주·오늘 사용), 누르면 팝오버. 보고 탭 위에 '이번 주 사용' ──
+// ── 사용량: 머리줄 요약 칩 하나('Claude 5h 57% · 주 22%', 높은 쪽 색), 누르면 상세 모달. 보고 탭 위에 '이번 주 사용' ──
 const RUNNER_NAME = { claude: 'Claude', antigravity: 'Antigravity' };
 const USE_NOTE = '예산 기준(비용 환산) 토큰 · 남은 한도는 Claude 가 실행 때 알려 준 값';
-const LIMIT_WINDOWS = [['fiveHour', '5시간'], ['sevenDay', '이번 주']];
+const LIMIT_WINDOWS = [['fiveHour', '5시간', '5h'], ['sevenDay', '주간', '주']];
+const LV_RANK = { ok: 0, warn: 1, over: 2 };
+const useModal = $('#use-modal');
+const limitWins = (lim) => LIMIT_WINDOWS.map(([k, label, short]) => ({ label, short, c: limitChip(lim?.[k]) }));
+const limitDetail = (c) => `남음 ${c.left}%${c.reset ? ` · ${c.reset} 리셋` : ''}`;
 function renderUsage() {
   const d = ui.data;
   const lim = d.limits;
   const tt = d.tokensToday || { total: 0 };
-  const bd = d.budget || { daily: 0, ratio: 0 };
-  const ru = d.usage?.byRunner || { today: {}, week: {} };
-  const runners = [...new Set(['claude', ...d.members.map((m) => m.runner).filter(Boolean), ...Object.keys(ru.week || {})])];
   const stale = lim?.stale ? `마지막 측정 ${rel(lim.at)}` : '';
-  const wins = LIMIT_WINDOWS.map(([k, label]) => ({ label, c: limitChip(lim?.[k]) })).filter((w) => w.c);
-  const detail = (c) => `남음 ${c.left}%${c.reset ? ` · ${c.reset} 리셋` : ''}`;
-  const limSegs = wins.length
-    ? wins.map(({ label, c }) => `<span class="seg lv-${stale ? 'stale' : c.lv}">${label} <b>${c.pct}%</b><span class="more"> · ${stale || detail(c)}</span></span>`).join('')
-    : '<span class="seg lv-stale">Claude 한도 <b>-</b></span>';
-  const others = runners.filter((r) => r !== 'claude').map((r) => `<span class="seg more">${esc(RUNNER_NAME[r] || r)} 오늘 <b>${fmtShort(ru.today?.[r] || 0)}</b> · 이번 주 ${fmtShort(ru.week?.[r] || 0)}</span>`).join('');
+  const wins = limitWins(lim).filter((w) => w.c);
+  const lv = stale ? 'stale' : wins.reduce((a, w) => (LV_RANK[w.c.lv] > LV_RANK[a] ? w.c.lv : a), 'ok');
   const chip = $('#use-chip');
-  chip.innerHTML = `${limSegs}<span class="seg lv-${budgetLevel(bd.ratio, bd.warn)}">오늘 사용 <b>${fmtShort(tt.total)}</b>${bd.daily ? `<span class="bar"><i style="width:${Math.min(100, bd.ratio * 100).toFixed(1)}%"></i></span>` : ''}</span>${others}`;
-  chip.title = `${wins.map(({ label, c }) => `${label} ${c.pct}% · ${detail(c)}`).join('\n') || 'Claude 한도: 아직 측정 없음'}${stale ? `\n${stale}` : ''}\n오늘 사용 ${fmtTok(tt.total)}\n${USE_NOTE}`;
-  // 머리줄 한 줄 유지: 칩이 밀려 숨으면 '남음·리셋'·다른 runner 를 접고 팝오버로만 보인다
-  chip.classList.remove('is-tight');
-  const stats = $('#stats');
-  if (stats.scrollHeight > stats.clientHeight + 1 || $('.top').scrollWidth > $('.top').clientWidth) chip.classList.add('is-tight');
-
-  const meter = (lv, ratio) => `<span class="bar lv-${lv}"><i style="width:${Math.min(100, ratio * 100).toFixed(1)}%"></i></span>`;
-  $('#use-pop').innerHTML = `<div class="pop-head"><b>토큰·한도</b><span class="muted">${stale || (lim ? `측정 ${rel(lim.at)}` : '측정 없음')}</span></div>
-    <h4 class="pop-sub">Claude 한도</h4>
-    ${wins.length ? `<ul class="use-list">${wins.map(({ label, c }) => `<li class="lv-${stale ? 'stale' : c.lv}"><span class="k">${label}</span>${meter(stale ? 'stale' : c.lv, c.pct / 100)}<b>${c.pct}%</b><span class="muted">${detail(c)}</span></li>`).join('')}</ul>` : '<p class="muted small">아직 측정 없음 — Claude 로 한 번 실행하면 채워집니다</p>'}
-    ${lim?.hit ? `<p class="small use-hit">한도에 닿았습니다${lim.hitResetsAt ? ` · ${resetText(lim.hitResetsAt)} 리셋` : ''}</p>` : ''}
-    <h4 class="pop-sub">runner 별</h4>
-    <ul class="use-list">${runners.map((r) => `<li><span class="k"><i class="dot-r r-${esc(r)}"></i>${esc(RUNNER_NAME[r] || r)}</span><span>오늘 <b>${fmtShort(ru.today?.[r] || 0)}</b> · 이번 주 <b>${fmtShort(ru.week?.[r] || 0)}</b></span>${r === 'claude' ? '' : '<span class="muted">한도 정보 없음</span>'}</li>`).join('')}</ul>
-    <h4 class="pop-sub">오늘 사용</h4>
-    <p class="small">전체 <b>${fmtTok(tt.total)}</b> · 예산 기준 ${fmtTok(tt.budgetTokens)}${tt.costUsd !== undefined ? ` · US$${tt.costUsd}` : ''}<br><span class="muted">입력 ${fmtShort(tt.input)} · 출력 ${fmtShort(tt.output)} · 캐시 읽기 ${fmtShort(tt.cacheRead)} · 캐시 쓰기 ${fmtShort(tt.cacheWrite)}</span>${bd.daily ? `<br>하루 상한 ${fmtShort(bd.daily)} (${Math.round(bd.ratio * 100)}%) ${meter(budgetLevel(bd.ratio, bd.warn), bd.ratio)}` : ''}</p>
-    <p class="muted small">${USE_NOTE}</p>
-    <a class="btn btn-sm" href="#report">이번 주 사용 보기</a>`;
+  chip.className = `use-chip lv-${lv}`;
+  chip.innerHTML = wins.length ? `Claude ${wins.map((w) => `${w.short} <b>${w.c.pct}%</b>`).join(' · ')}` : `Claude 한도 <b>-</b> · 오늘 <b>${fmtShort(tt.total)}</b>`;
+  chip.title = `${wins.map(({ label, c }) => `${label} ${c.pct}% · ${limitDetail(c)}`).join('\n') || 'Claude 한도: 아직 측정 없음'}${stale ? `\n${stale}` : ''}\n오늘 사용 ${fmtTok(tt.total)}\n누르면 상세`;
+  if (useModal.open) fillUseModal();
   renderWeek();
 }
+/** 반원 게이지: 호 길이를 pathLength 100 으로 두고 dasharray 로 채운다 */
+const ARC = 'M10 62a50 50 0 0 1 100 0';
+const gauge = (label, c, stale) => `<figure class="gauge lv-${stale || !c ? 'stale' : c.lv}">
+    <svg viewBox="0 0 120 68" aria-hidden="true"><path d="${ARC}" pathLength="100"/><path class="g-val" d="${ARC}" pathLength="100" stroke-dasharray="${c ? c.pct : 0} 100"/><text x="60" y="58">${c ? `${c.pct}%` : '-'}</text></svg>
+    <figcaption><b>Claude ${label}</b><span class="muted">${c ? limitDetail(c) : '측정 없음'}</span></figcaption></figure>`;
+/** 비율 막대(SVG): parts = [[runner, 값]] → runner 색으로 이어 붙이고 옆에 % */
+function shareRow(label, parts) {
+  const sum = parts.reduce((a, [, n]) => a + n, 0);
+  let x = 0;
+  const rects = sum ? parts.map(([r, n]) => { const w = (n / sum) * 100; const s = `<rect class="r-${esc(r)}" x="${x.toFixed(2)}" width="${w.toFixed(2)}" height="8"/>`; x += w; return s; }).join('') : '';
+  const legend = sum ? parts.map(([r, n]) => `<span>${runnerDot(r)} ${Math.round((n / sum) * 100)}%</span>`).join('') : '<span class="muted">없음</span>';
+  return `<li><span class="k">${label}</span><svg class="ratio" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true"><rect class="r-bg" width="100" height="8"/>${rects}</svg><b>${fmtShort(sum)}</b><span class="ratio-legend">${legend}</span></li>`;
+}
+function hrRow(label, w) {
+  const pct = w?.pct ?? 0;
+  return `<li><span class="k">Headroom ${label}</span><svg class="ratio" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true"><rect class="r-bg" width="100" height="8"/><rect class="r-hr" width="${Math.min(100, pct)}" height="8"/></svg><b>${w ? `${w.pct ?? '-'}%` : '-'}</b><span class="ratio-legend muted">${w ? `${fmtShort(w.before)} 중 ${fmtShort(w.saved)} 줄임${w.newPct !== null ? ` · 새 입력 ${w.newPct}%` : ''}` : ui.headroom === undefined ? '불러오는 중' : '수집 전'}</span></li>`;
+}
+function fillUseModal() {
+  const d = ui.data;
+  const lim = d.limits;
+  const stale = lim?.stale ? `마지막 측정 ${rel(lim.at)}` : '';
+  const ru = d.usage?.byRunner || { today: {}, week: {} };
+  const runners = [...new Set(['claude', ...d.members.map((m) => m.runner).filter(Boolean), ...Object.keys(ru.week || {})])];
+  const parts = (o = {}) => runners.map((r) => [r, o[r] || 0]).filter(([, n]) => n);
+  const hr = ui.headroom;
+  const wk = weekTotals(d.week);
+  const top = topMembers(d.week, 5);
+  const hrStat = (label, w) => `<dt>${label}</dt><dd>${w ? `<b>${fmtShort(w.saved)}토큰</b><span class="muted">${usd(w.usd)} · 호출 ${fmtTok(w.calls)}</span>` : `<span class="muted">${hr === undefined ? '불러오는 중' : '수집 전'}</span>`}</dd>`;
+  $('#use-modal-sub').textContent = `${stale || (lim ? `한도 측정 ${rel(lim.at)}` : '한도 측정 없음')}${hr?.at ? ` · Headroom ${rel(hr.at)}` : ''}`;
+  $('#use-modal-body').innerHTML = `<div class="gauges">${limitWins(lim).map((w) => gauge(w.label, w.c, stale)).join('')}</div>
+    ${lim?.hit ? `<p class="small use-hit">한도에 닿았습니다${lim.hitResetsAt ? ` · ${resetText(lim.hitResetsAt)} 리셋` : ''}</p>` : ''}
+    <section><h3>토큰 비율</h3><ul class="ratio-list">
+      ${shareRow('오늘', parts(ru.today))}${shareRow('이번 주', parts(ru.week))}${hrRow('오늘', hr?.today)}${hrRow('7일', hr?.week)}
+    </ul></section>
+    <div class="modal-grid">
+      <section><h3>Headroom 절약</h3><dl class="save-list">${hrStat('오늘', hr?.today)}${hrStat('7일', hr?.week)}</dl></section>
+      <section class="wk-top"><h3>멤버 상위 5 · 이번 주</h3>${top.length ? `<ol>${top.map(([id, n]) => `<li><span class="grow">${esc(nameOf(id))}</span><span class="bar"><i style="width:${((n / (top[0][1] || 1)) * 100).toFixed(1)}%"></i></span><b>${fmtShort(n)}</b><span class="muted">${wk.budget ? Math.round((n / wk.budget) * 100) : 0}%</span></li>`).join('')}</ol>` : '<p class="empty">아직 없음</p>'}</section>
+    </div>
+    <p class="muted small">${USE_NOTE}</p>
+    <a class="btn btn-sm" href="#usage">사용량 탭에서 자세히</a>`;
+}
+$('#use-chip').addEventListener('click', () => {
+  fillUseModal();
+  useModal.showModal();
+  loadHeadroom();
+});
+$('#use-modal-close').addEventListener('click', () => useModal.close());
+// 배경 클릭·탭 링크는 닫기
+useModal.addEventListener('click', (e) => {
+  if (e.target === useModal || e.target.closest('a[href^="#"]')) useModal.close();
+});
 // ── 사용량 탭: Claude·Antigravity·Headroom 비교. 이번 주 숫자는 logic.js usageReport, Headroom 은 서버 캐시 ──
 const usd = (n) => (n === null || n === undefined ? '-' : `$${n < 100 ? n.toFixed(2) : Math.round(n).toLocaleString('ko-KR')}`);
 /** 서버 runStats(최근 기록 전체) → 표 칸: 실행 수, 툴팁에 실행당 기본 맥락·작업당 토큰 */
@@ -950,6 +984,7 @@ async function loadHeadroom() {
     ui.headroom = null; // 서버에 아직 없음 → '수집 전'
   }
   if (ui.tab === 'usage') renderUsageTab();
+  if (useModal.open) fillUseModal();
 }
 function renderUsageTab() {
   const d = ui.data;
@@ -1083,8 +1118,6 @@ function closePop(name) {
   pop.hidden = true;
   $(btn).setAttribute('aria-expanded', 'false');
 }
-pops.use = { btn: '#use-chip', pop: $('#use-pop') };
-$('#use-chip').addEventListener('click', () => togglePop('use'));
 $('#conn-chip').addEventListener('click', () => togglePop('conn'));
 $('#inbox-chip').addEventListener('click', () => togglePop('inbox'));
 connPop.addEventListener('click', (e) => {

@@ -269,6 +269,6 @@ export function weekTotals(week) {
 export function headroomView(h) {
   const w = h?.windows || h?.data?.windows;
   if (!w) return null;
-  const pick = (x) => (x ? { saved: x.tokens_saved || 0, before: x.tokens_before || 0, pct: x.savings_percent ?? null, usd: x.cost_usd ?? null, calls: x.calls || 0 } : null);
+  const pick = (x) => (x ? { saved: x.tokens_saved || 0, before: x.tokens_before || 0, pct: x.savings_percent ?? (x.tokens_before ? Math.round((x.tokens_saved / x.tokens_before) * 1000) / 10 : null), newPct: x.new_input_savings_percent ?? null, usd: x.cost_usd ?? null, calls: x.calls || 0 } : null);
   return { at: h.at || null, today: pick(w.today), week: pick(w.last_7_days) };
 }

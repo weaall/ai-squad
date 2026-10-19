@@ -27,7 +27,7 @@
       <select id="project-select" class="select" aria-label="프로젝트 선택"></select>
     </label>
     <div class="stats" id="stats" aria-live="polite"></div>
-    <button type="button" class="use-chip" id="use-chip" aria-haspopup="dialog" aria-expanded="false" aria-controls="use-pop"></button>
+    <button type="button" class="use-chip" id="use-chip" aria-haspopup="dialog" aria-controls="use-modal"></button>
     <span id="demo-badge" class="demo-badge" hidden title="scripts/demo-events.mjs 가 만든 시연 기록입니다. 실제 기록이 아닙니다.">시연 데이터</span>
     <nav class="tabs" role="tablist" aria-label="화면">
       <a href="#squad" role="tab" class="tab" id="tab-squad" aria-controls="panel-squad">스쿼드</a>
@@ -204,6 +204,22 @@
     </div>
   </dialog>
 
+  <!-- 사용량 상세: 머리줄 요약 칩을 눌렀을 때만 -->
+  <dialog class="modal use-modal" id="use-modal" aria-labelledby="use-modal-title">
+    <div class="modal-box">
+      <div class="modal-head">
+        <div class="modal-title-wrap">
+          <h2 id="use-modal-title">사용량</h2>
+          <p id="use-modal-sub" class="muted"></p>
+        </div>
+        <button type="button" class="icon-btn" id="use-modal-close" aria-label="닫기">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body" id="use-modal-body"></div>
+    </div>
+  </dialog>
+
   <!-- 입력 요청: 멤버가 사람의 답을 기다릴 때만 화면을 가린다. 승인은 오른쪽 확인 패널. -->
   <dialog class="modal ask" id="ask" aria-labelledby="ask-title">
     <form class="modal-box" id="ask-form" method="dialog" novalidate>
@@ -227,7 +243,6 @@
   <div class="popover" id="tech-pop" role="dialog" aria-label="사용 기술" hidden></div>
   <div class="popover small-pop" id="conn-pop" role="dialog" aria-label="실행기 연결 상태" hidden></div>
   <div class="popover small-pop" id="inbox-pop" role="dialog" aria-label="데스크톱 세션 지시" hidden></div>
-  <div class="popover small-pop" id="use-pop" role="dialog" aria-label="토큰·한도" hidden></div>
 
   <div class="toast" id="toast" role="status" hidden></div>
   <script src="/app.js" type="module"></script>

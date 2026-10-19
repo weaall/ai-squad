@@ -1,5 +1,8 @@
 ## 인계 메모
 
+- T-mvewgg91-c63f: 머리줄 #use-chip 은 'Claude 5h n% · 주 n%' 요약 하나(높은 쪽 lv 색) → 누르면 dialog#use-modal(fillUseModal: 반원 게이지 2·runner/Headroom 비율 SVG 막대·Headroom 절약·멤버 상위 5·#usage 링크). #use-pop 팝오버 삭제.
+  headroomView 에 pct 없으면 saved/before, newPct(new_input_savings_percent) 추가. 1440·1280 데모 캡처 확인(데모는 Headroom '수집 전'). server/index.test.mjs 1개 실패는 ui 무관.
+
 - T-mvevdfn6-2699: 머리줄 #use-chip 한 개(5시간·이번 주 limitChip 70/90%·stale 회색, 오늘 사용, runner 별 .more 는 넘치면 is-tight 로 숨김) → 누르면 #use-pop(리셋 시각·남음·runner 별 '한도 정보 없음').
   '이번 주 사용' 패널은 사용량 탭 #week-panel(renderWeek: 21시 경계 막대 runner 색·used 선·멤버 상위 5). 툴팁 USE_NOTE. 1440·1280 데모 캡처 확인, node --test 159 통과.
 
