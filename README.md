@@ -48,6 +48,15 @@ node bin/squad.mjs auth status            # 실행기(runner) 연결 상태
 
 `run`·`order` 는 기본으로 `claude` 를 바로 실행합니다. 토큰을 줄이고 싶으면 `--headroom` 을 주거나 MEMBER.md frontmatter 에 `headroom: true` 를 두세요. 그러면 `headroom wrap claude -- ...` 로 감쌉니다. 켜져 있는데 headroom 이 설치돼 있지 않으면 경고만 하고 `claude` 로 실행합니다.
 
+### ponytail·graphify (기본 켜짐)
+
+headroom 처럼 모든 멤버 실행에 기본으로 켭니다. 끄려면 MEMBER.md `plugins` 맵에 `ponytail: false`·`graphify: false`.
+
+- **graphify**: 실행 전에 프로젝트 폴더에서 `graphify update .`(잠금·5분 신선도·3분 제한, 실패해도 계속). 프롬프트에 "코드 질문은 grep·읽기 전에 `graphify query/path/explain` 먼저, 원본은 그래프가 가리킨 줄만, 수정 뒤 `graphify update .`" 규칙. Antigravity 는 셸을 못 써서 작업 제목으로 미리 질의한 결과를 넣습니다.
+- **ponytail**: 전역 Claude Code 플러그인이 이미 켭니다. 프롬프트에 최소 코드 원칙 한 줄, 꺼진 멤버만 그 실행에서 `PONYTAIL_DEFAULT_MODE=off`.
+- **절감 확인**: 보드 사용량 탭 "도구별 절감"(멤버별·일별). headroom 은 실측(전체 합), graphify 는 추정(질의가 가리킨 파일 크기 − 돌려준 글자, ÷4 토큰), ponytail 은 실행별 측정 방법이 없어 "측정 방법 없음" 과 켜진 실행 수만.
+- `squad doctor` 가 graphify 설치·그래프 존재·최신, ponytail 켜짐을 봅니다. 자세한 것은 [SPEC 10절](docs/SPEC.md#10-토큰-절약-도구-기본-적용--ponytailgraphify-2026-10-21).
+
 ## 토큰 예산 (v0.4)
 
 `squad.config.json` 의 `budget` 으로 하루 전체(`daily`), 멤버별 하루(`memberDaily`), 작업당(`task`) 토큰 상한을 둡니다(0 은 상한 없음). MEMBER.md frontmatter 에 `budget: 300000` 을 쓰면 그 멤버의 하루 상한을 덮어씁니다.

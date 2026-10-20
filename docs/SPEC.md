@@ -262,3 +262,46 @@ reviewer: site            # (v0.4) 끝난 작업을 검수할 멤버 (비우면 
 ### 9.10 시연
 
 `scripts/demo-events.mjs` 가 v0.3 시연에 더해 만든다: 오늘 사용량을 하루 상한의 82% 쯤으로(시연 값) + 메인 오더의 예산 확인 카드, 선행이 남은 작업(대시보드 부서 범주 필터 ← 백엔드 집계 API), 검수 대기 작업과 검수 통과, 상세(시연용 예시 SQL·파일·명령·되돌리기, 위험 높음)가 붙은 DB 마이그레이션 승인 요청, 오늘 보고(`data/demo/<project>/reports/`, "시연 데이터로 만든 보고" 표시), 데스크톱 inbox 대기 1·끝 1. 모두 `data/demo/` 에만 쓰고 상세·보고에 "시연" 표시를 남긴다.
+
+## 10. 토큰 절약 도구 기본 적용 — ponytail·graphify (2026-10-21)
+
+headroom 처럼 멤버 실행에 기본으로 켠다. 코드는 `lib/tokentools.mjs`.
+
+### 10.1 켜기·끄기
+
+- MEMBER.md `plugins` 맵에 `ponytail`·`graphify` 가 없으면 켜진 것으로 본다. 끄려면 `ponytail: false`·`graphify: false`(보드 멤버 카드 기술 팝오버로도 바뀐다). headroom 은 그대로 `headroom:` 키.
+- 두 이름은 일반 플러그인 설치 점검·`setup` 설치 목록에서 빠진다(전용 점검이 따로 있다).
+
+### 10.2 멤버 실행 흐름 (`runMember`)
+
+1. graphify 가 켜져 있고 설치돼 있으면 **원래 프로젝트 폴더**에서 `graphify update .`(AST 만, 오프라인).
+   - `data/locks/graphify-<경로 해시>.lock` 잠금. 다른 실행이 잡고 있으면 기다리지 않고 기존 그래프로 진행.
+   - 5분 안에 갱신했으면 건너뜀(`graphify-out/.squad-updated`). 시간 제한 3분. 실패해도 실행은 계속.
+   - `graphify-out` 을 새로 만들었으면 그 안에 `.gitignore`(`*`) — 저장소 git 상태를 더럽히지 않는다.
+   - worktree 멤버는 따로 만들지 않고 원래 트리 그래프를 `--graph <경로>` 로 본다(같은 HEAD 에서 갈라진다).
+2. 프롬프트 "# 토큰 절약 규칙"(켜진 도구만):
+   - graphify: 코드 질문은 grep·읽기 전에 `graphify query/path/explain` 먼저, 원본은 그래프가 가리킨 줄만, 수정 뒤 `graphify update .`(worktree 는 뺌).
+   - ponytail: 요청된 것만 가장 짧게, 있는 함수·표준 라이브러리 먼저.
+3. runner 별:
+   - claude: 허용 도구에 `Bash(graphify *)`, PATH 앞에 graphify 폴더(pip `--user` 설치라 PATH 에 없어도 됨). ponytail 은 전역 플러그인이 SessionStart 훅으로 켜므로 켤 일은 없고, 꺼진 멤버만 `PONYTAIL_DEFAULT_MODE=off` 로 그 실행에서 끈다. `~/.claude` 는 고치지 않는다.
+   - Antigravity(agy): 헤드리스는 셸 명령을 거부해 graphify 를 부를 수 없다 → 스쿼드가 작업 제목·내용으로 `graphify query --budget 800` 을 미리 돌려 프롬프트 "graphify 결과" 에 넣는다.
+
+### 10.3 절감 측정
+
+실행이 끝나면 `end` 이벤트(`data/events.jsonl`)에 `savings` 를 남긴다.
+
+```json
+"savings": { "on": ["headroom", "ponytail", "graphify"], "graphify": { "calls": 2, "out": 5800, "src": 240000, "files": 9, "saved": 234200 }, "graphUpdate": "updated" }
+```
+
+| 도구 | 측정 | 계산 |
+|---|---|---|
+| headroom | 실측 — `headroom savings --json --days 7`(기존) | 전역 오늘·7일 합. 멤버별 수치는 없다 |
+| graphify | 추정 — 실행 로그(stream-json)의 Bash graphify query·path·explain 과 그 결과(agy 는 미리 넣은 질의) | `out` = 돌려준 글자, `src` = 결과의 `src=` 파일들 전체 크기 합(중복 제외), 절감 = max(0, src − out). 화면에서 ÷4 로 토큰 환산. "그 파일들을 통째로 읽었다면" 의 가정이라 실측이 아니다 |
+| ponytail | 측정 방법 없음 | `ponytail-gain` 은 공개 벤치마크 중앙값(코드 80–94%·비용 47–77% 감소)만 보여 주고 실행별 기록을 남기지 않는다. 만들지 않은 코드는 비교 기준이 없어 지어내지 않는다. 켜진 실행 수만 센다 |
+
+`buildState` 의 `savings`(`state.mjs toolSavings`)가 최근 7일(21시 경계 하루)을 멤버별·일별로 더한다. 보드 사용량 탭 "아낀 양" 칸 아래 "도구별 절감" 에 요약·멤버별 표·일별 표가 보인다(headroom 은 오늘 줄에만 숫자). 별도 `squad usage` 명령은 없다.
+
+### 10.4 진단
+
+`squad doctor [project]` 가 graphify 설치, graphify 가 켜진 멤버가 있는 프로젝트의 `graphify-out/graph.json` 존재·24시간 안 갱신, ponytail 이 켜진 멤버가 있으면 ponytail 플러그인 설치·켜짐(`~/.claude` 읽기만)을 본다.
