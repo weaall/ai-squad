@@ -37,6 +37,7 @@ import {
 import { hasCommand } from '../lib/runners/proc.mjs';
 import { modelFor } from '../lib/runners/claude.mjs';
 import { bigClaudeMds, refreshMap } from '../lib/runners/map.mjs';
+import { graphFile, graphifyBin, isTokenTool, ponytailState } from '../lib/tokentools.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const now = () => new Date().toISOString();
@@ -46,7 +47,7 @@ const HELP = `AI Squad CLI
   init <project> <path> [--name 이름] [--squad-dir squads/<project>] [--local]
                                            .squad 뼈대와 projects.json 항목 만들기. path 는 상대 경로·%USERPROFILE% 그대로 저장
                                            --local: 이 PC 전용 projects.local.json(git 제외)에 경로만 덮어쓰기
-  doctor [project] [--propose]             이 PC 점검: claude 로그인·headroom·멤버 플러그인 설치·경로·작업 공간 신뢰 (설치는 안 함)
+  doctor [project] [--propose]             이 PC 점검: claude 로그인·headroom·graphify(설치·그래프)·ponytail·멤버 플러그인 설치·경로·작업 공간 신뢰 (설치는 안 함)
                                            30KB 넘는 저장소 CLAUDE.md 경고, --propose: 그 저장소 담당에게 줄이기 작업 제안
   map <project> [--force]                  파일 지도 data/<project>/map.md 갱신 (커밋이 바뀌었을 때만, 쉬운 모델)
   setup [--yes] [--json]                   빠진 도구(squad.config.json tools, 기본 claude·gemini·headroom)·멤버 플러그인을 확인 후 설치. 로그 logs/setup-*.log
@@ -279,6 +280,8 @@ const commands = {
     add('claude CLI 로그인', claude?.state === 'ok', claude?.state === 'ok' ? '' : `${LOGIN_COMMAND} (설치: npm i -g @anthropic-ai/claude-code)`);
     const installed = readInstalled();
     const needAgy = new Set();
+    const gBin = graphifyBin();
+    let wantPony = false;
     for (const id of ids) {
       const { path: dir, squad } = resolveProject(ROOT, projects[id]);
       const there = fs.existsSync(dir);
@@ -293,8 +296,17 @@ const commands = {
         // outputStyle 파일이 없으면 실행은 되지만 스타일 없이 돈다
         if (m.outputStyle) add(`${id} 출력 스타일 ${m.outputStyle} (${m.id})`, Boolean(outputStyleFile(m.outputStyle)), outputStyleFile(m.outputStyle) ? '' : `claude plugin install ${m.outputStyle.replace(/-not-coding$/, '')}  (~/.claude/plugins/cache/<마켓>/<플러그인>/<버전>/output-styles/${m.outputStyle}.md)`);
         for (const p of m.plugins) {
-          if (p !== 'headroom') (seen.get(p) || seen.set(p, []).get(p)).push(m.id);
+          if (!isTokenTool(p)) (seen.get(p) || seen.set(p, []).get(p)).push(m.id);
         }
+      }
+      // 토큰 절약 도구(lib/tokentools.mjs): graphify 가 켜진 멤버가 있으면 그래프가 있는지·하루 안에 갱신했는지
+      if (members.some((m) => m.plugins.includes('ponytail'))) wantPony = true;
+      if (members.some((m) => m.plugins.includes('graphify'))) {
+        const g = graphFile(dir);
+        const at = Math.max(...[g, path.join(dir, 'graphify-out', '.squad-updated')].map((f) => (fs.existsSync(f) ? fs.statSync(f).mtimeMs : 0)));
+        const hours = at ? Math.round((Date.now() - at) / 36e5) : 0;
+        add(`${id} graphify 그래프 ${path.relative(dir, g)}`, fs.existsSync(g), fs.existsSync(g) ? '' : `cd "${dir}" && graphify update .  (멤버 실행 때도 자동으로 만든다)`);
+        if (at) add(`${id} graphify 그래프 최신 (${hours < 1 ? '1시간 안' : `${hours}시간 전`} 갱신)`, hours < 24 ? true : null, hours < 24 ? '' : `cd "${dir}" && graphify update .  (멤버 실행 전에 자동 갱신)`);
       }
       for (const [p, who] of seen) {
         const c = checkPlugin(p, installed);
@@ -311,6 +323,9 @@ const commands = {
         add(`${id} ${title}`, null, b.owner ? `node bin/squad.mjs doctor ${id} --propose  (${b.owner} 에게 작업 제안)` : '핵심 규칙만 남기고 상세는 docs/ 로');
       }
     }
+    add('graphify (멤버 실행 전 그래프 갱신·질의 규칙)', Boolean(gBin), gBin ? '' : 'pip install --user graphifyy  (없으면 graphify 규칙 없이 실행)');
+    const pony = ponytailState();
+    if (wantPony) add('ponytail 플러그인 설치·켜짐 (claude 멤버, 꺼진 멤버만 실행별로 끔)', pony.installed && pony.enabled, pony.installed ? (pony.enabled ? '' : '~/.claude/settings.json enabledPlugins 에서 ponytail 켜기 (claude plugin enable ponytail)') : 'claude plugin install ponytail@ponytail');
     add('headroom (claude 실행을 항상 감쌈)', hasCommand('headroom'), hasCommand('headroom') ? '' : 'pip install headroom-ai  (없으면 경고 후 claude 로 바로 실행)');
     // Antigravity 는 선택 — 쓰는 멤버가 없으면 없어도 ? 로만 보인다
     const agy = await getRunner(loadConfig(ROOT), 'antigravity').status({ force: true });
