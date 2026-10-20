@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isTokenTool } from '../lib/tokentools.mjs';
 
 /** %USERPROFILE%·$HOME·${VAR}·~ 를 풀고 base 기준 절대 경로로. 없는 변수는 그대로 둔다. */
 export function expandPath(raw, base, env = process.env) {
@@ -124,7 +125,7 @@ export function setupPlan({ tools, plugins = [], installed, check }) {
   const owners = new Set();
   for (const p of plugins) {
     const owner = p.split(':')[0];
-    if (p === 'headroom' || owners.has(owner) || checkPlugin(p, installed).state !== 'missing') continue;
+    if (isTokenTool(p) || owners.has(owner) || checkPlugin(p, installed).state !== 'missing') continue;
     owners.add(owner);
     steps.push({ kind: 'plugin', name: owner, cmd: pluginInstallCmd(p) });
   }

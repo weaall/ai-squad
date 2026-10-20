@@ -57,7 +57,7 @@ test('보드 서버: 토큰·상태·POST·승인·켜기끄기·SSE·보안', a
 
     const st = await (await get('/api/state?project=p')).json();
     assert.equal(st.members.length, 2);
-    assert.deepEqual(st.members[1].pluginList, [{ name: 'dataviz', on: true }, { name: 'design:ux-copy', on: true }]);
+    assert.deepEqual(st.members[1].pluginList, [{ name: 'dataviz', on: true }, { name: 'design:ux-copy', on: true }, { name: 'ponytail', on: true }, { name: 'graphify', on: true }]);
     assert.match(await (await get('/')).text(), /AI Squad/);
     assert.equal((await get('/api/state?project=..')).status, 404);
     assert.equal((await get('/..%2F..%2Fpackage.json')).status, 404);
@@ -122,7 +122,7 @@ test('보드 서버: 토큰·상태·POST·승인·켜기끄기·SSE·보안', a
     assert.equal((await post('/api/member/toggle', { project: 'p', id: 'site', kind: 'plugin', name: 'ghost', on: false })).status, 400);
     assert.equal((await post('/api/member/toggle', { project: 'p', id: 'site', kind: 'model', on: false })).status, 400);
     const tg = await (await post('/api/member/toggle', { project: 'p', id: 'site', kind: 'plugin', name: 'dataviz', on: false })).json();
-    assert.deepEqual(tg.pluginList, [{ name: 'dataviz', on: false }, { name: 'design:ux-copy', on: true }]);
+    assert.deepEqual(tg.pluginList, [{ name: 'dataviz', on: false }, { name: 'design:ux-copy', on: true }, { name: 'ponytail', on: true }, { name: 'graphify', on: true }]);
     assert.equal((await post('/api/member/toggle', { project: 'p', id: 'site', kind: 'headroom', on: true })).status, 200);
     const md = fs.readFileSync(mdFile, 'utf8');
     assert.match(md, /headroom: true/);
