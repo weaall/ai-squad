@@ -834,6 +834,10 @@ pre.cmd { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--su
 .kpi b { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.25; }
 .kpi-sub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .use-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1.15fr); gap: 12px; }
+/* 도구별 절감은 '아낀 양' 아래(같은 칸 안에서 스크롤) */
+#use-tools { border-top: 1px solid var(--line-soft); padding-top: 10px; margin-top: 4px; }
+.tools-table { margin-bottom: 10px; }
+.tools-table th:first-child { width: 30%; }
 .use-box { padding: 12px 14px; min-height: 0; overflow: hidden; }
 .use-box.scroll { overflow-y: auto; }
 .use-h { margin: 0 0 8px; font-size: 13.5px; display: flex; gap: 8px; align-items: baseline; }

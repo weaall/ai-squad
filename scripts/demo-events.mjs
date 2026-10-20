@@ -60,7 +60,14 @@ const usage = (input, output, cacheRead = 0) => {
   const u = { input, output, cacheRead, cacheWrite: Math.round(input / 4) };
   return daily > 0 && usedToday() + budgetTokens(u) > daily * 0.95 ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : u;
 };
-const end = (member, taskId, u, ago = 0) => ev(member, { type: 'end', taskId, status: 'idle', text: '완료', usage: u }, ago);
+// 시연용 도구별 절감(가짜) — 사용량 탭 '도구별 절감' 칸이 비어 보이지 않게
+const demoSavings = () => {
+  const calls = 1 + Math.floor(Math.random() * 4);
+  const out = calls * (1500 + Math.floor(Math.random() * 2500));
+  const src = out * (4 + Math.floor(Math.random() * 10));
+  return { on: ['headroom', 'ponytail', 'graphify'], graphify: { calls, out, src, files: calls * 3, saved: src - out } };
+};
+const end = (member, taskId, u, ago = 0) => ev(member, { type: 'end', taskId, status: 'idle', text: '완료', usage: u, savings: demoSavings() }, ago);
 const finish = (t, summary, u) => {
   setTask(t.id, { status: 'done', summary, usage: u });
   end(t.member, t.id, u);

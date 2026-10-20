@@ -272,3 +272,23 @@ export function headroomView(h) {
   const pick = (x) => (x ? { saved: x.tokens_saved || 0, before: x.tokens_before || 0, pct: x.savings_percent ?? (x.tokens_before ? Math.round((x.tokens_saved / x.tokens_before) * 1000) / 10 : null), newPct: x.new_input_savings_percent ?? null, usd: x.cost_usd ?? null, calls: x.calls || 0 } : null);
   return { at: h.at || null, today: pick(w.today), week: pick(w.last_7_days) };
 }
+
+/**
+ * 서버 savings(lib/state.mjs toolSavings) → 사용량 탭 '도구별 절감'. graphify 는 글자 ÷ 4 로 토큰 환산(추정).
+ * → { week: {runs, on, graphify, tokens}, members: [{id, …}](절감 큰 순), days: [{day, …}](최근이 위) } | null
+ */
+export function toolView(s) {
+  if (!s?.days) return null;
+  const tok = (x) => ({ ...x, tokens: Math.round((x.graphify?.saved || 0) / 4) });
+  const week = { runs: 0, on: { headroom: 0, ponytail: 0, graphify: 0 }, graphify: { calls: 0, out: 0, src: 0, saved: 0 } };
+  for (const d of s.days) {
+    week.runs += d.runs;
+    for (const k in week.on) week.on[k] += d.on?.[k] || 0;
+    for (const k in week.graphify) week.graphify[k] += d.graphify?.[k] || 0;
+  }
+  return {
+    week: tok(week),
+    members: Object.entries(s.members || {}).map(([id, m]) => tok({ id, ...m })).sort((a, b) => b.tokens - a.tokens || b.runs - a.runs),
+    days: s.days.map(tok).reverse(),
+  };
+}

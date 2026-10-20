@@ -76,3 +76,21 @@ test('headroomView: 감싼 응답·날것 모두, 없으면 null', () => {
   assert.equal(w.newPct, 42.5);
   assert.equal(headroomView(null), null);
 });
+
+test('toolView: 주 합계·멤버·일별, graphify 글자÷4 토큰', async () => {
+  const { toolView } = await import('./logic.js');
+  const g = (saved) => ({ calls: 1, out: 100, src: saved + 100, saved });
+  const v = toolView({
+    days: [
+      { day: '2026-10-20', runs: 1, on: { headroom: 1, ponytail: 1, graphify: 0 }, graphify: g(0) },
+      { day: '2026-10-21', runs: 2, on: { headroom: 2, ponytail: 2, graphify: 2 }, graphify: g(4000) },
+    ],
+    members: { a: { runs: 1, on: { ponytail: 1 }, graphify: g(0) }, b: { runs: 2, on: { graphify: 2 }, graphify: g(4000) } },
+  });
+  assert.equal(v.week.runs, 3);
+  assert.equal(v.week.on.ponytail, 3);
+  assert.equal(v.week.tokens, 1000);
+  assert.deepEqual(v.members.map((m) => m.id), ['b', 'a']);
+  assert.equal(v.days[0].day, '2026-10-21');
+  assert.equal(toolView(null), null);
+});

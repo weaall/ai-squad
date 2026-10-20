@@ -1,6 +1,6 @@
 // AI Squad 보드 화면. 프레임워크 없이 상태 하나를 받아 전부 다시 그린다.
 import { SIZE, character, drawCharacter } from './pixel.js';
-import { STATUS_FALLBACK, askItems, blockedAction, budgetLevel, canApprove, confirmItems, inputKey, inputPayload, limitChip, looksLikeDiff, orderOutcome, panelDecision, renderDiff, resetText, todoCounts, topMembers, usageReport, headroomView, viewStatus, weekSlots, weekTotals } from './logic.js';
+import { STATUS_FALLBACK, askItems, blockedAction, budgetLevel, canApprove, confirmItems, inputKey, inputPayload, limitChip, looksLikeDiff, orderOutcome, panelDecision, renderDiff, resetText, todoCounts, topMembers, usageReport, headroomView, toolView, viewStatus, weekSlots, weekTotals } from './logic.js';
 const $ = (s) => document.querySelector(s);
 const KIND = { order: '지시', handoff: '인계', question: '질문', answer: '답변', report: '완료 보고', note: '메모' };
 const TASK_COLS = [['todo', '할 일'], ['doing', '진행 중'], ['review', '검수'], ['blocked', '막힘'], ['done', '완료']];
@@ -993,9 +993,34 @@ async function loadHeadroom() {
   if (ui.tab === 'usage') renderUsageTab();
   if (useModal.open) fillUseModal();
 }
+// 도구별 절감(최근 7일): headroom 은 전역 실측(멤버별 없음), graphify 는 실행 기록의 추정, ponytail 은 실행별 측정 방법이 없다
+const PONY_NOTE = 'ponytail 은 실행별 절감을 재는 방법이 없습니다(만들지 않은 코드는 비교 기준이 없음). 공개된 벤치마크 중앙값: 코드 80–94%·비용 47–77% 감소 — 이 저장소 수치가 아닙니다.';
+const GRAPH_NOTE = 'graphify 절감 = 질의 결과가 가리킨 파일(src=) 전체 크기 − 돌려준 글자, ÷4 로 토큰 환산. 그 파일들을 통째로 읽었다고 가정한 추정입니다.';
+function renderToolSavings() {
+  const v = toolView(ui.data?.savings);
+  const hr = ui.headroom;
+  const box = $('#use-tools');
+  if (!v) return (box.innerHTML = '<h3 class="use-h">도구별 절감</h3><p class="empty">기록 없음</p>');
+  const gCell = (x) => (x.graphify.calls ? `<span title="질의 ${x.graphify.calls}회 · 돌려준 ${fmtTok(x.graphify.out)}자 · 가리킨 파일 ${fmtTok(x.graphify.src)}자">≈${fmtShort(x.tokens)}</span>` : x.on.graphify ? '<span class="muted">질의 없음</span>' : '-');
+  const pCell = (x) => (x.on.ponytail ? `<span class="muted" title="${esc(PONY_NOTE)}">켜짐 ${x.on.ponytail}/${x.runs}</span>` : '-');
+  const today = v.days[0]?.day;
+  const hCell = (day) => (day === today && hr?.today ? fmtShort(hr.today.saved) : '<span class="muted" title="headroom 은 오늘·7일 전체 합만 알려 줍니다">-</span>');
+  box.innerHTML = `<h3 class="use-h">도구별 절감 <span class="muted">최근 7일 · 실행 ${v.week.runs}회</span></h3>
+    <dl class="save-list">
+      <dt>Headroom</dt><dd><b>${hr?.week ? `${fmtShort(hr.week.saved)}토큰` : '수집 전'}</b><span class="muted">실측 · 전체 합(멤버별 없음)</span></dd>
+      <dt>Graphify <em class="est" title="${esc(GRAPH_NOTE)}">추정</em></dt><dd><b>≈${fmtShort(v.week.tokens)}토큰</b><span class="muted">질의 ${v.week.graphify.calls}회 · 켜진 실행 ${v.week.on.graphify}</span></dd>
+      <dt>Ponytail</dt><dd><b class="muted" title="${esc(PONY_NOTE)}">측정 방법 없음</b><span class="muted">켜진 실행 ${v.week.on.ponytail}</span></dd>
+    </dl>
+    <table class="use-table tools-table"><thead><tr><th>멤버</th><th class="num">실행</th><th class="num">Headroom</th><th class="num" title="${esc(GRAPH_NOTE)}">Graphify</th><th class="num">Ponytail</th></tr></thead>
+    <tbody>${v.members.length ? v.members.map((m) => `<tr><td>${esc(nameOf(m.id))}</td><td class="num">${m.runs}</td><td class="num muted" title="headroom 은 멤버별 수치가 없습니다">-</td><td class="num">${gCell(m)}</td><td class="num">${pCell(m)}</td></tr>`).join('') : '<tr><td colspan="5" class="muted">기록 없음</td></tr>'}</tbody></table>
+    <table class="use-table tools-table"><thead><tr><th>날짜</th><th class="num">실행</th><th class="num">Headroom</th><th class="num">Graphify</th><th class="num">Ponytail</th></tr></thead>
+    <tbody>${v.days.map((x) => `<tr><td>${esc(x.day.slice(5))}</td><td class="num">${x.runs}</td><td class="num">${hCell(x.day)}</td><td class="num">${gCell(x)}</td><td class="num">${pCell(x)}</td></tr>`).join('')}</tbody></table>
+    <p class="muted small">${esc(GRAPH_NOTE)} ${esc(PONY_NOTE)}</p>`;
+}
 function renderUsageTab() {
   const d = ui.data;
   if (!d) return;
+  renderToolSavings();
   const r = usageReport(d, d.week?.start ?? Date.now() - 7 * 864e5);
   const tt = d.tokensToday || { total: 0 };
   const hr = ui.headroom;
