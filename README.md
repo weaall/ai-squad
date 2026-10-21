@@ -43,6 +43,8 @@ node bin/squad.mjs auth status            # 실행기(runner) 연결 상태
 | `capture <project> <url> [--member id] [--task T-..] [--width 1440] [--height 900]` | (v0.4) 설치된 Chrome/Edge 로 화면을 찍어 `data/captures/` 에 두고 작업·메시지에 첨부 |
 | `inbox <project> [--take]` / `inbox add <project> "<지시>"` / `inbox done <id> "<결과>"` | (v0.4) 보드에서 "데스크톱 Claude 세션"으로 보낸 지시를 대화형 세션이 가져가고 끝내기 |
 | `board [--port 4777] [--demo]` | 보드 서버 (127.0.0.1 에만 묶음) |
+| `library list` | 에이전트 라이브러리(`library/`) 목록 — 기반 경로·원문/요약 글자 수 |
+| `member base <project> <member> <agency/분류/이름\|none>` | 멤버 MEMBER.md 에 기반 직무(`base:`)를 연결하거나 해제 |
 
 ### Headroom (선택)
 
@@ -56,6 +58,14 @@ headroom 처럼 모든 멤버 실행에 기본으로 켭니다. 끄려면 MEMBER
 - **ponytail**: 전역 Claude Code 플러그인이 이미 켭니다. 프롬프트에 최소 코드 원칙 한 줄, 꺼진 멤버만 그 실행에서 `PONYTAIL_DEFAULT_MODE=off`.
 - **절감 확인**: 보드 사용량 탭 "도구별 절감"(멤버별·일별). headroom 은 실측(전체 합), graphify 는 추정(질의가 가리킨 파일 크기 − 돌려준 글자, ÷4 토큰), ponytail 은 실행별 측정 방법이 없어 "측정 방법 없음" 과 켜진 실행 수만.
 - `squad doctor` 가 graphify 설치·그래프 존재·최신, ponytail 켜짐을 봅니다. 자세한 것은 [SPEC 10절](docs/SPEC.md#10-토큰-절약-도구-기본-적용--ponytailgraphify-2026-10-21).
+
+## 에이전트 라이브러리 (기반 직무)
+
+오픈소스 [agency-agents](https://github.com/msitarzewski/agency-agents)(MIT)에서 고른 직무별 에이전트 문서를 `library/agency/<분류>/<이름>.md` 에 두고(출처·커밋은 `library/agency/SOURCE.md`, 라이선스 사본 `LICENSE`), 멤버의 뼈대로 씁니다. 전역 `~/.claude/agents/` 에는 설치하지 않습니다.
+
+- MEMBER.md frontmatter 에 `base: agency/testing/accessibility-auditor` 를 두면(`squad member base ...`), `run` 이 프롬프트에 **기반 직무(일하는 방식·체크리스트·산출물 형식·판단 기준)를 먼저**, 그다음 멤버 문서(프로젝트 규칙)를 넣습니다. 둘이 부딪히면 멤버 문서가 우선입니다.
+- 원문(9~21K자)은 그대로 두고, 같은 이름의 `.brief.md` 한국어 요약(0.7~0.9K자)만 넣어 토큰을 아낍니다. 요약이 없으면 원문 본문을 넣습니다.
+- `base` 가 없는 멤버는 예전과 똑같이 돕니다. 경로가 틀렸거나 파일이 없으면 경고만 하고 기반 없이 실행합니다.
 
 ## 토큰 예산 (v0.4)
 

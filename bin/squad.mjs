@@ -9,7 +9,8 @@ import { parseArgs } from 'node:util';
 import {
   appendJsonl, isId, loadMembers, loadProjects, memberFile, newId, projectPaths, readJsonl, saveProjects, updateTask,
 } from '../lib/store.mjs';
-import { setSection } from '../lib/md.mjs';
+import { setFrontmatterValue, setSection } from '../lib/md.mjs';
+import { baseFile, isBase, listLibrary } from '../lib/library.mjs';
 import { STATUS_LABEL, buildState, describeEvent, tokenTotal } from '../lib/state.mjs';
 import { validateMessage, validateTask } from '../lib/validate.mjs';
 import { askMainAi, budgetGate, finishReview, planOrder, runMember, runOrder, runQueue, runReview, saveOrder } from '../lib/runner.mjs';
@@ -90,6 +91,9 @@ const HELP = `AI Squad CLI
   inbox add <project> "<지시>"             지시 넣기 (보드 명령 창의 "데스크톱 Claude 세션"과 같다)
   inbox done <id> "<결과>" [--project p]   처리 끝 표시
   board [--port 4777] [--demo]             보드 서버 (--demo: 시연 데이터 파일로)
+  library list                             에이전트 라이브러리(library/) 목록 — 기반 경로·원문/요약 크기
+  member base <project> <member> <agency/분류/이름|none>
+                                           멤버의 기반 직무 연결(MEMBER.md base). 실행 때 기반 요약을 멤버 문서보다 먼저 넣는다
 
   run·order·run-queue·review·report --ai 는 실행 전에 오늘 토큰 예산(squad.config.json budget)을 본다.
   80% 를 넘으면 승인 대기(budget)를 남기고 결정을 기다리고, 100% 를 넘으면 실행하지 않는다.`;
@@ -817,6 +821,26 @@ const commands = {
       return console.log(`${t.id} → ${patch.status}`);
     }
     fail('사용법: task add|done|block ...');
+  },
+
+  library([sub = 'list']) {
+    if (sub !== 'list') fail('사용법: library list');
+    const items = listLibrary(ROOT);
+    if (!items.length) return console.log('라이브러리가 비어 있습니다 (library/)');
+    const k = (n) => `${Math.round(n / 100) / 10}K`;
+    console.log(table([['기반 경로', '이름', '원문', '요약'], ...items.map((i) => [i.base, i.name, k(i.chars), i.brief ? k(i.briefChars) : '-'])]));
+  },
+
+  member([sub, projectId, memberId, base]) {
+    if (sub !== 'base' || !memberId || !base) fail('사용법: member base <project> <member> <agency/분류/이름|none>');
+    const { paths, members } = ctx(projectId);
+    if (!members.some((m) => m.id === memberId)) fail(`없는 멤버: ${memberId}`);
+    const clear = base === 'none';
+    if (!clear && !isBase(base)) fail(`잘못된 라이브러리 경로: ${base}`);
+    if (!clear && !fs.existsSync(baseFile(ROOT, base))) fail(`라이브러리에 없음: ${base} (squad library list 로 확인)`);
+    const file = memberFile(paths, memberId);
+    fs.writeFileSync(file, setFrontmatterValue(fs.readFileSync(file, 'utf8'), 'base', clear ? '' : base), 'utf8');
+    console.log(clear ? `${memberId}: 기반 해제` : `${memberId} → 기반 ${base}`);
   },
 
   async board(_, o) {
